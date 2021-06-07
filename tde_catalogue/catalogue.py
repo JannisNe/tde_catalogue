@@ -5,26 +5,30 @@ class Catalogue(abc.ABC):
 
     columns = [
         "ID",
-        "name",
-        "Reps",
-        "Class",
+        "Name",
         "RA",
         "DEC",
         "Obj. Type",
         "Redshift",
-        "Hostname",
+        "Host Name",
         "Host Redshift",
-        "Reporting Groups",
+        "Reporting Group/s",
+        "Associated Group/s",
         "Discovery Data Source/s",
         "Classifying Group/s",
         "Disc. Internal Name",
+        "Disc. Instrument/s",
+        "Class. Instrument/s",
         "Public",
-        "Object Spectra",
         "Discovery Mag/Flux",
         "Discovery Filter",
         "Discovery Date (UT)",
-        "Sender"
+        "Sender",
+        "Ext. catalog/s",
+        "Remarks"
     ]
+
+    registered_catalogues = dict()
 
     def __init__(self, catalogue, name):
         """
@@ -45,3 +49,14 @@ class Catalogue(abc.ABC):
     def reformat_catalogue(unformated_catalogue):
         """Takes the raw catalogue and returns it in the uniform data format"""
         raise NotImplementedError
+
+    @classmethod
+    def register_catalogue(cls, catalogue_name):
+        """
+        Adds a new subclass of Catalogue
+        """
+        def decorator(subclass):
+            cls.registered_catalogues[catalogue_name] = subclass
+            return subclass
+
+        return decorator
