@@ -1,3 +1,5 @@
 jupyterlab
 numpy
 pandas
+astropy
+tqdm
