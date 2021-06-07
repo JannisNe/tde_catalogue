@@ -11,6 +11,7 @@ logger = main_logger.getChild(__name__)
 raw_data = f'{os.path.dirname(__file__)}/TheOpenTDECatalog.csv'
 
 
+@Catalogue.register_catalogue('OpenTDECatalogue')
 class OpenTDECatalogue(Catalogue):
 
     def __init__(self):
