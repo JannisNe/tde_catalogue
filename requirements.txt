@@ -4,3 +4,6 @@ jupyterlab==3.0.16
 numpy==1.20.3
 pandas==1.2.4
 tqdm==4.61.0
+matplotlib==3.4.2
+git+git://github.com/dfm/casjobs@master
+git+git://github.com/rlwastro/mastcasjobs@master
