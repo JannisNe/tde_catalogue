@@ -47,6 +47,9 @@ jobs:
 
       # Runs a set of commands using the runners shell
       - name: Test the code
+        env:
+          CASJOBS_WSID: ${{ secrets.CASJOBS_WSID }}
+          CASJOBS_PW: ${{ secrets.CASJOBS_PW }}
         run: |
           coverage run --concurrency=multiprocessing -m unittest discover tests/
           coverage combine
