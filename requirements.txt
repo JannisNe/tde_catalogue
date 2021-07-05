@@ -6,7 +6,7 @@ pandas==1.2.5
 tqdm==4.61.1
 matplotlib==3.4.2
 pyvo==1.1
-pillow==8.2.0
+pillow==8.3.0
 requests==2.25.1
 git+git://github.com/dfm/casjobs@master
 git+git://github.com/rlwastro/mastcasjobs@master
