@@ -65,7 +65,7 @@ class WISEDataTestVersion(WISEData):
         super().__init__(n_chunks=3,
                          where=WISEDataTestVersion.where,
                          base_name=WISEDataTestVersion.base_name,
-                         parent_sample=PanstarrsParentSampleTestVersion)
+                         parent_sample_class=PanstarrsParentSampleTestVersion)
         self._cached_tap_output = None
 
     def get_tap_output(self, chunk_number, table_name):
