@@ -29,6 +29,11 @@ class PanstarrsParentSample:
         inner join HLSP_PS1_PSC.pointsource_scores psc on psc.objid=o.objid and psc.ps_score=0 and o.nDetections>10 
     """
 
+    default_keymap = {
+        'dec': 'decMean',
+        'ra': 'raMean'
+    }
+
     def __init__(self,
                  base_name=base_name,
                  MAST_table_name=MAST_table_name,
@@ -95,7 +100,7 @@ class PanstarrsParentSample:
             logger.debug(f'Table not on MAST!')
         return table_exists
 
-    ######################################
+    #####################################################################################################
     # START make some plotting functions #
     ######################################
 
@@ -151,4 +156,4 @@ class PanstarrsParentSample:
 
     ####################################
     # END make some plotting functions #
-    ####################################
+    ###################################################################################################
