@@ -125,41 +125,47 @@ class WISEData:
 
         tap_res = self.get_tap_output(chunk_number, table_name)
 
-        logger.info('matching query result to parent sample')
-        parent_dec = self.parent_sample.df[self.parent_dec_key]
-        parent_ra = self.parent_sample.df[self.parent_ra_key]
+        logger.info(f'matching {len(tap_res)} objects from query result to '
+                    f'{len(self.parent_sample.df)} objects from parent sample')
 
-        dd, dde = tap_res[self.data_dec_key], tap_res[self.data_dec_error_key]
-        dd_minus_dde = dd - dde
-        dd_plus_dde = dd + dde
+        if len(tap_res) == 0:
+            logger.warning(f'No objects to match to! Skipping!')
 
-        chunk_mask = (parent_dec >= min(dd_minus_dde)) & (parent_dec <= max(dd_plus_dde))
-        chunk_indices = np.where(chunk_mask)[0]
-        logger.debug(f'{len(parent_ra[chunk_mask])} in this chunk')
+        else:
+            parent_dec = self.parent_sample.df[self.parent_dec_key]
+            parent_ra = self.parent_sample.df[self.parent_ra_key]
 
-        logger.debug('doing the catalogue matching ...')
-        parent_sample_coord = SkyCoord(parent_ra[chunk_mask] * u.degree,
-                                       parent_dec[chunk_mask] * u.degree)
-        query_tap_result_coord = SkyCoord(tap_res[self.data_ra_key] * u.degree,
-                                          tap_res[self.data_dec_key] * u.degree)
+            dd, dde = tap_res[self.data_dec_key], tap_res[self.data_dec_error_key]
+            dd_minus_dde = dd - dde
+            dd_plus_dde = dd + dde
 
-        index, sky_sep, _ = parent_sample_coord.match_to_catalog_sky(query_tap_result_coord)
-        logger.debug(f'Index: {index[:10]} ...')
-        logger.debug(f'skyse: {sky_sep[:10]} ...')
+            chunk_mask = (parent_dec >= min(dd_minus_dde)) & (parent_dec <= max(dd_plus_dde))
+            chunk_indices = np.where(chunk_mask)[0]
+            logger.debug(f'{len(parent_ra[chunk_mask])} in this chunk')
 
-        logger.debug(f'shape of index is {np.shape(index)}')
-        new_closest_source_mask = sky_sep.to(self.store_angles_as).value < self.parent_sample.df[self.parent_sample_wise_skysep_key][chunk_mask]
-        new_closest_source_index = index[new_closest_source_mask]
-        logger.debug(f'shape of new source mask is {np.shape(new_closest_source_mask)}')
-        source_ids = tap_res.iloc[new_closest_source_index][self.data_id_key]
-        source_skysep = sky_sep[new_closest_source_mask].to(self.store_angles_as).value
+            logger.debug('doing the catalogue matching ...')
+            parent_sample_coord = SkyCoord(parent_ra[chunk_mask] * u.degree,
+                                           parent_dec[chunk_mask] * u.degree)
+            query_tap_result_coord = SkyCoord(tap_res[self.data_ra_key] * u.degree,
+                                              tap_res[self.data_dec_key] * u.degree)
 
-        self.parent_sample.df.loc[
-            chunk_indices[new_closest_source_mask],
-            self.parent_sample_wise_skysep_key
-        ] = list(source_skysep)
+            index, sky_sep, _ = parent_sample_coord.match_to_catalog_sky(query_tap_result_coord)
+            logger.debug(f'Index: {index[:10]} ...')
+            logger.debug(f'skyse: {sky_sep[:10]} ...')
 
-        self.parent_sample.df.loc[
-            chunk_indices[new_closest_source_mask],
-            self.parent_wise_source_id_key
-        ] = list(source_ids)
+            logger.debug(f'shape of index is {np.shape(index)}')
+            new_closest_source_mask = sky_sep.to(self.store_angles_as).value < self.parent_sample.df[self.parent_sample_wise_skysep_key][chunk_mask]
+            new_closest_source_index = index[new_closest_source_mask]
+            logger.debug(f'shape of new source mask is {np.shape(new_closest_source_mask)}')
+            source_ids = tap_res.iloc[new_closest_source_index][self.data_id_key]
+            source_skysep = sky_sep[new_closest_source_mask].to(self.store_angles_as).value
+
+            self.parent_sample.df.loc[
+                chunk_indices[new_closest_source_mask],
+                self.parent_sample_wise_skysep_key
+            ] = list(source_skysep)
+
+            self.parent_sample.df.loc[
+                chunk_indices[new_closest_source_mask],
+                self.parent_wise_source_id_key
+            ] = list(source_ids)
