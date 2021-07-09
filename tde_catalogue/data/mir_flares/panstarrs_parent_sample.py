@@ -37,11 +37,13 @@ class PanstarrsParentSample:
     def __init__(self,
                  base_name=base_name,
                  MAST_table_name=MAST_table_name,
-                 query=query):
+                 query=query,
+                 store=True):
 
         self.base_name = base_name
         self.MAST_table_name = MAST_table_name
         self.query = query
+        self._store=store
 
         # Set up mastcasjobs to query MAST
         self.mastcasjob = mastcasjobs.MastCasJobs(context="PanSTARRS_DR2")
@@ -59,30 +61,33 @@ class PanstarrsParentSample:
         # START make MAST query #
         #########################
 
-        if not os.path.isfile(self.local_panstarrs_sample_copy):
+        if (not os.path.isfile(self.local_panstarrs_sample_copy)) or (not self._store):
             # If there is no local copy, get the table from MAST
             logger.info('No local copy of Panstarrs query result. Getting info from MAST')
 
             if not self.check_if_table_on_mast():
                 # If the query result is not on MAST, do the query
                 logger.info('Querying PANSTARRS-MAST')
-                logger.info(f'Query: {self.query}')
+                logger.debug(f'Query: {self.query}')
                 self.job_id = self.mastcasjob.submit(self.query, task_name="parent sample query")
-                logger.info(f'Job {self.job_id}')
+                logger.debug(f'Job {self.job_id}')
                 self.mastcasjob.monitor(self.job_id)
 
-            logger.info('loading table from MAST')
-            results = self.mastcasjob.get_table(self.MAST_table_name, format="CSV")
-            logger.info(f'got {len(results)} objects')
-            logger.info(f'saving to {self.local_panstarrs_sample_copy}')
-            results.to_pandas().to_csv(self.local_panstarrs_sample_copy)
+            logger.debug('loading table from MAST')
+            self.df = self.mastcasjob.get_table(self.MAST_table_name, format="CSV").to_pandas()
+            logger.info(f'got {len(self.df)} objects')
+
+            if self._store:
+                logger.debug(f'saving to {self.local_panstarrs_sample_copy}')
+                self.df.to_csv(self.local_panstarrs_sample_copy)
 
         #######################
         # END make MAST query #
         #######################################################################################
 
-        logger.info('loading local copy')
-        self.df = pd.read_csv(self.local_panstarrs_sample_copy)
+        if self._store:
+            logger.info('loading local copy')
+            self.df = pd.read_csv(self.local_panstarrs_sample_copy)
 
     @property
     def local_panstarrs_sample_copy(self):
@@ -119,10 +124,12 @@ class PanstarrsParentSample:
         fig.savefig(filename)
         plt.close()
 
-    def plot_cutout(self, ind, arcsec=20):
+    def plot_cutout(self, ind, arcsec=20, interactive=False, **kwargs):
         """
         Plot the coutout images in all filters around the position of object with index i
         """
+
+        ou = list()
 
         for i in np.atleast_1d(ind):
 
@@ -132,7 +139,7 @@ class PanstarrsParentSample:
             ang_deg = arcsec / 3600
 
             filters = 'grizy'
-            height = 2.5
+            height = kwargs.pop('height', 2.5)
             fig, axss = plt.subplots(2, len(filters), sharex='all', sharey='all',
                                      gridspec_kw={'wspace': 0, 'hspace': 0, 'height_ratios': [1, 8]},
                                      figsize=(height * 5, height))
@@ -140,7 +147,8 @@ class PanstarrsParentSample:
                 im = getgrayim(r.raMean, r.decMean, size=ang_px, filter=fil)
                 axs = axss[1]
                 axs[j].imshow(im, origin='upper',
-                              extent=([r.raMean - ang_deg, r.raMean + ang_deg, r.decMean - ang_deg, r.decMean + ang_deg]),
+                              extent=([r.raMean + ang_deg/2, r.raMean - ang_deg/2,
+                                       r.decMean - ang_deg/2, r.decMean + ang_deg/2]),
                               cmap='gray')
 
                 axs[j].scatter(r.raMean, r.decMean, marker='x', color='red')
@@ -149,10 +157,17 @@ class PanstarrsParentSample:
 
             fig.suptitle(r.objName)
 
-            filename = os.path.join(self.plots_dir, f'{i}_{r.objName}.pdf')
-            logger.info(f'saving under {filename}')
-            fig.savefig(filename)
-            plt.close()
+            if interactive:
+                ou.append([fig, axss])
+
+            else:
+                filename = os.path.join(self.plots_dir, f'{i}_{r.objName}.pdf')
+                logger.info(f'saving under {filename}')
+                fig.savefig(filename)
+                plt.close()
+
+        if interactive:
+            return ou
 
     ####################################
     # END make some plotting functions #
