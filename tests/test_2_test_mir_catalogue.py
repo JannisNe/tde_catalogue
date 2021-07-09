@@ -1,5 +1,7 @@
 import unittest, os, shutil, copy
 import numpy as np
+from astropy.coordinates import SkyCoord
+from astropy import units as u
 
 from tde_catalogue import main_logger, cache_dir, plots_dir
 from tde_catalogue.utils.mirong_sample import get_mirong_sample
@@ -12,7 +14,7 @@ logger = main_logger.getChild(__name__)
 
 
 mirong_sample = get_mirong_sample()
-mirong_test_id = 0
+mirong_test_id = 28
 
 test_ra = mirong_sample['RA'].iloc[mirong_test_id]
 test_dec = mirong_sample['DEC'].iloc[mirong_test_id]
@@ -117,6 +119,15 @@ class TestMIRFlareCatalogue(unittest.TestCase):
         logger.info('\n\n Testing WISE Data \n')
         wise_data = WISEDataTestVersion()
         wise_data.match_all_chunks('allwise_p3as_psd')
+
+        df = wise_data.parent_sample.df
+        c1 = SkyCoord(df.raMean * u.degree, df.decMean * u.degree)
+        c2 = SkyCoord(float(test_ra) * u.degree, float(test_dec) * u.degree)
+        sep = c1.separation(c2)
+        closest_ind = np.argsort(sep)
+
+        self.assertLess(sep[closest_ind][0], 0.5 * u.arcsec)
+        wise_data.parent_sample.plot_cutout(closest_ind[0], arcsec=40)
 
     @classmethod
     def tearDownClass(cls):
