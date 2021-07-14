@@ -8,6 +8,6 @@ tqdm==4.61.2
 matplotlib==3.4.2
 pyvo==1.1
 pillow==8.3.1
-requests==2.25.1
+requests==2.26.0
 git+git://github.com/dfm/casjobs@master
 git+git://github.com/rlwastro/mastcasjobs@master
