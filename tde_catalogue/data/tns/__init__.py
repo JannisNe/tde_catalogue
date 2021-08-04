@@ -23,5 +23,6 @@ class TNSCatalogue(Catalogue):
         formatted_catalogue = pd.DataFrame(columns=Catalogue.columns)
         for c in Catalogue.columns:
             formatted_catalogue[c] = unformated_catalogue[c]
+        formatted_catalogue["Ext. catalog/s"] = "TNSCatalogue"
         logger.info(f'TNS catalogue has {len(formatted_catalogue.columns)} columns')
         return formatted_catalogue
