@@ -29,7 +29,7 @@ class WISEData:
 
     full_cat_select = """
     SELECT
-        t.source_id, t.ra, t.dec, t.sigra, t.sigdec
+        t.source_id, t.ra, t.dec, t.sigra, t.sigdec, t.cntr
     """
 
     where = """
@@ -44,7 +44,7 @@ class WISEData:
     }
 
     data_default_keymap = {
-        'id': 'source_id',
+        'id': 'cntr',
         'dec': 'dec',
         'ra': 'ra',
         'dec_error': 'sigdec',
@@ -169,3 +169,73 @@ class WISEData:
                 chunk_indices[new_closest_source_mask],
                 self.parent_wise_source_id_key
             ] = list(source_ids)
+
+    def get_photometric_data(self):
+
+        jobs = list()
+
+        for i, r in self.parent_sample.df.iterrows():
+
+            cntr = r[self.parent_wise_source_id_key]
+
+            logger.debug(f"getting photometry for {cntr}")
+
+            ##########################################################
+            #      AllWISE
+            ##########################################################
+
+            q = f"""
+                SELECT
+                    mjd, w1flux_ep, w1sigflux_ep, w2flux_ep, w2sigflux_ep
+                FROM
+                    allwise_p3as_mep
+                WHERE
+                    cntr={cntr}
+            """
+
+            allwise_job = WISEData.service.submit_job(q)
+            allwise_job.run()
+
+            ##########################################################
+            #      NEOWISE-R
+            ##########################################################
+
+            q = f"""
+            SELECT
+                mjd, w1flux, w1sigflux, w2flux, w2sigflux
+            FROM
+                neowiser_p1bs_psd
+            WHERE
+                allwise_cntr={cntr}
+            """
+
+            neowiser_job = WISEData.service.submit_job(q)
+            neowiser_job.run()
+
+            jobs.append([allwise_job, neowiser_job, cntr])
+
+        for these_jobs in tqdm(jobs, desc='collecting output '):
+
+            these_jobs[0].wait()
+            allwise_lightcurve = these_jobs[0].fetch_result().to_table().to_pandas()
+            allwise_lightcurve = allwise_lightcurve.rename(
+                columns={
+                    'w1flux_ep': 'W1_flux',
+                    'w1sigflux_ep': 'W1_flux_error',
+                    'w2flux_ep': 'W2_flux',
+                    'w2sigflux_ep': 'W2_flux_error'
+                }
+            )
+
+            these_jobs[1].wait()
+            neowiser_lightcurve = these_jobs[1].fetch_result().to_table().to_pandas()
+            neowiser_lightcurve = neowiser_lightcurve.rename(
+                columns={
+                    'w1flux': 'W1_flux',
+                    'w1sigflux': 'W1_flux_error',
+                    'w2flux': 'W2_flux',
+                    'w2sigflux': 'W2_flux_error'
+                }
+            )
+
+            combined_lightcurve = allwise_lightcurve.append(neowiser_lightcurve)
