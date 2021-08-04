@@ -55,7 +55,7 @@ def get_mirong_sample():
 
         finally:
             logger.debug(f"removing {local_copy}")
-            # os.remove(local_copy)
+            os.remove(local_copy)
 
         mirong_sample.to_csv(local_copy, index=True)
 
