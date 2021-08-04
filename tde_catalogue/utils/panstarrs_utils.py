@@ -1,4 +1,4 @@
-import sys, os, re, json
+import sys, os, re, json, io, tqdm
 import numpy as np
 from urllib.parse import quote as urlencode
 import http.client as httplib
@@ -6,6 +6,7 @@ from astropy.table import Table
 import requests
 from PIL import Image
 from io import BytesIO
+import pandas as pd
 
 # get the WSID and password if not already defined
 import getpass
@@ -13,6 +14,12 @@ if not os.environ.get('CASJOBS_WSID'):
     os.environ['CASJOBS_WSID'] = input('Enter Casjobs WSID:')
 if not os.environ.get('CASJOBS_PW'):
     os.environ['CASJOBS_PW'] = getpass.getpass('Enter Casjobs password:')
+
+from tde_catalogue import main_logger
+
+
+logger = main_logger.getChild(__name__)
+crossmatch_url = 'https://catalogs.mast.stsci.edu/api/v0.1/panstarrs/mean/crossmatch/upload.csv'
 
 
 ####################################
@@ -200,6 +207,38 @@ def fixcolnames(tab):
             raise ValueError("Unable to parse column name '{}'".format(c))
         newname = m.group('name')
         tab.rename_column(c, newname)
+    return tab
+
+
+def crossmatch_to_panstarrs(file, radius):
+    """
+    Crossmatch a catalogue to Pan-STARRS
+    :param file: str or io stream, filename or io object of the CSV table
+    :param radius: astropy.Quantity, search radius around catalogue sources
+    :return: pandas.DataFrame
+    """
+    radius_arcsec = radius.to('degree').value
+    logger.debug(f'searching in a radius of {radius}')
+
+    if isinstance(file, str):
+        file = open(file, 'rb')
+
+    r = requests.post(crossmatch_url, params=dict(radius=radius_arcsec), files=dict(file=file))
+
+    if r.status_code != 200:
+        raise ValueError(f'Crossmatch failed with status {r.status_code}: {r.text}')
+
+    restab = pd.read_csv(io.StringIO(r.text))
+    uniuqe_ids = restab['_searchID_'].unique()
+    logger.debug(f'found {len(restab)} results for {len(uniuqe_ids)} IDs')
+
+    tab = pd.DataFrame(columns=restab.columns)
+    for sid in tqdm.tqdm(uniuqe_ids, desc='selecting closest result'):
+        m = restab['_searchID_'] == sid
+        tab = tab.append(restab[m].iloc[restab['dstArcSec'][m].argmin()])
+
+    logger.debug(f'final result has {len(tab)} rows')
+
     return tab
 
 
