@@ -17,17 +17,9 @@ class PanstarrsParentSample:
 
     base_name = mir_base_name + '/panstarrs_parent_sample'
     MAST_table_name = 'test_table15_with_psc'
-
-    query = f"""
-    SELECT
-        o.objID, o.raMean, o.decMean, o.nDetections, o.objName, o.objAltName1, o.objAltName2, o.objAltName3, o.objPopularName,
-        psc.ps_score
-    INTO
-        MyDB.{MAST_table_name}
-    FROM
-        ObjectThin o 
-        inner join HLSP_PS1_PSC.pointsource_scores psc on psc.objid=o.objid and psc.ps_score=0 and o.nDetections>10 
-    """
+    ps_score_threshold = 0.7
+    sg_score_threshold = 0
+    minDetections = 5
 
     default_keymap = {
         'dec': 'decMean',
@@ -37,13 +29,17 @@ class PanstarrsParentSample:
     def __init__(self,
                  base_name=base_name,
                  MAST_table_name=MAST_table_name,
-                 query=query,
+                 ps_score_threshold=ps_score_threshold,
+                 sg_score_threshold=sg_score_threshold,
+                 minDetections=minDetections,
                  store=True):
 
         self.base_name = base_name
         self.MAST_table_name = MAST_table_name
-        self.query = query
-        self._store=store
+        self.ps_score_threshold = ps_score_threshold
+        self.sg_score_threshold = sg_score_threshold
+        self.minDetections = minDetections
+        self._store = store
 
         # Set up mastcasjobs to query MAST
         self.mastcasjob = mastcasjobs.MastCasJobs(context="PanSTARRS_DR2")
@@ -88,6 +84,21 @@ class PanstarrsParentSample:
         if self._store:
             logger.info('loading local copy')
             self.df = pd.read_csv(self.local_panstarrs_sample_copy)
+
+    @property
+    def query(self):
+        q = f"""
+            SELECT
+                o.objID, o.raMean, o.decMean, o.nDetections, o.objName
+                psc.ps_score
+            INTO
+                MyDB.{self.MAST_table_name}
+            FROM
+                ObjectThin o 
+                inner join HLSP_PS1_PSC.pointsource_scores psc on psc.objid=o.objid and psc.ps_score<{self.ps_score_threshold} and o.nDetections>{self.minDetections} 
+                inner join HLSP_PS1_STRM.catalogRecordRowStore sgs on sgs.objid=o.objid and sgs.prob_star/sgs.prob_galaxy<{self.sg_score_threshold}
+            """
+        return q
 
     @property
     def local_panstarrs_sample_copy(self):
