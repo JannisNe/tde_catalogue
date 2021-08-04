@@ -79,7 +79,7 @@ class WISEDataTestVersion(WISEData):
 
             queue = f"""
             SELECT
-                source_id, ra, dec, sigra, sigdec, nb, na, cc_flags
+                source_id, ra, dec, sigra, sigdec, nb, na, cc_flags, cntr
             FROM
                 {table_name}
             WHERE
