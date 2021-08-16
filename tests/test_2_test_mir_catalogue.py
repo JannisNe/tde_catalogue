@@ -118,7 +118,7 @@ class TestMIRFlareCatalogue(unittest.TestCase):
     def test_b_test_wise_data(self):
         logger.info('\n\n Testing WISE Data \n')
         wise_data = WISEDataTestVersion()
-        wise_data.match_all_chunks('allwise_p3as_psd')
+        wise_data.match_all_chunks()
 
         df = wise_data.parent_sample.df
         c1 = SkyCoord(df.raMean * u.degree, df.decMean * u.degree)
@@ -128,6 +128,11 @@ class TestMIRFlareCatalogue(unittest.TestCase):
 
         self.assertLess(sep[closest_ind][0], 0.5 * u.arcsec)
         wise_data.parent_sample.plot_cutout(closest_ind[0], arcsec=40)
+
+    def test_c_test_real_wisedata(self):
+        logger.info('\n\n Testing real WISE Data \n')
+        wise_data = WISEData(n_chunks=20)
+        wise_data.match_single_chunk(10)
 
     @classmethod
     def tearDownClass(cls):
