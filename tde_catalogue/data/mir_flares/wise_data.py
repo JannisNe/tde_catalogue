@@ -92,9 +92,9 @@ class WISEData:
         self.dec_intervalls = np.degrees(np.arcsin(np.array([sin_bounds[:-1], sin_bounds[1:]]).T))
         logger.info(f'Declination intervalls are {self.dec_intervalls}')
 
-    def match_all_chunks(self, table_name):
+    def match_all_chunks(self, **table_name):
         for i in range(len(self.dec_intervalls)):
-            self.match_single_chunk(i, table_name)
+            self.match_single_chunk(i, **table_name)
 
     def get_tap_output(self, chunk_number, table_name):
         dec_intervall = self.dec_intervalls[chunk_number]
@@ -121,7 +121,12 @@ class WISEData:
         tap_res = query_job.fetch_result().to_table().to_pandas()
         return tap_res
 
-    def match_single_chunk(self, chunk_number, table_name):
+    def match_single_chunk(self, chunk_number,
+                           table_name="AllWISE Source Catalog"):
+
+        m = WISEData.table_names['nice_table_name'] == table_name
+        if np.any(m):
+            table_name = WISEData.table_names['table_name'][m]
 
         tap_res = self.get_tap_output(chunk_number, table_name)
 
