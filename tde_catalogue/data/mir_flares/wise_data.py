@@ -2,7 +2,6 @@ import os, subprocess, copy
 import pandas as pd
 import numpy as np
 import pyvo as vo
-from tqdm import tqdm
 import astropy.units as u
 from astropy.table import Table
 
@@ -42,22 +41,6 @@ class WISEData:
         }
     }
 
-    # full_cat_select = """
-    # SELECT
-    #     t.source_id, t.ra, t.dec, t.sigra, t.sigdec, t.cntr
-    # """
-
-    # where = """
-    # WHERE
-    #     t.nb<2 and
-    #     t.na<1 and
-    #     t.cc_flags like '00%'"""
-
-    # parent_sample_default_keymap = {
-    #     'dec': 'decMean',
-    #     'ra': 'raMean'
-    # }
-
     constraints = [
         "nb<2",
         "na<1",
@@ -67,40 +50,28 @@ class WISEData:
         "moon_masked = '00'"
     ]
 
-    data_default_keymap = {
-        'id': 'cntr',
-        'dec': 'dec',
-        'ra': 'ra',
-        'dec_error': 'sigdec',
-        'ra_error': 'sigra'
-    }
-
     def __init__(self,
                  min_sep_arcsec=60,
                  n_chunks=8,
-                 # full_cat_select=full_cat_select, where=where,
                  base_name=base_name,
-                 parent_sample_class=PanstarrsParentSample,
-                 **kwargs):
+                 parent_sample_class=PanstarrsParentSample):
+        """
+        Initialise a class instance
+        :param min_sep_arcsec: float, minimum separation required to the parent sample sources
+        :param n_chunks: int, number of chunks in declination
+        :param base_name: str, unique name to determine storage directories
+        :param parent_sample_class: object, class for parent sample
+        """
 
         parent_sample = parent_sample_class()
-        # self.full_cat_select = full_cat_select
-        # self.where = where
         self.base_name = base_name
         self.min_sep = min_sep_arcsec * u.arcsec
-        # self.store_angles_as = 'degree'
 
         # set up parent sample keys
         self.parent_ra_key = parent_sample.default_keymap['ra']
         self.parent_dec_key = parent_sample.default_keymap['dec']
         self.parent_wise_source_id_key = 'WISE_id'
         self.parent_sample_wise_skysep_key = 'sep_to_WISE_source'
-        # set up data keys
-        # self.data_id_key = kwargs.pop('data_id_key', WISEData.data_default_keymap['id'])
-        # self.data_ra_key = kwargs.pop('data_ra_key', WISEData.data_default_keymap['ra'])
-        # self.data_dec_key = kwargs.pop('data_dec_key', WISEData.data_default_keymap['dec'])
-        # self.data_ra_error_key = kwargs.pop('data_ra_error_key', WISEData.data_default_keymap['ra_error'])
-        # self.data_dec_error_key = kwargs.pop('data_dec_error_key', WISEData.data_default_keymap['dec_error'])
 
         # set up directories
         self.cache_dir = os.path.join(cache_dir, base_name)
@@ -123,6 +94,12 @@ class WISEData:
 
     @staticmethod
     def get_db_name(table_name, nice=False):
+        """
+        Get the right table name
+        :param table_name: str, table name
+        :param nice: bool, whether to get the nice table name
+        :return: str
+        """
         source_column = 'nice_table_name' if not nice else 'table_name'
         target_column = 'table_name' if not nice else 'nice_table_name'
 
@@ -139,6 +116,11 @@ class WISEData:
 
     def match_single_chunk(self, chunk_number,
                            table_name="AllWISE Source Catalog"):
+        """
+        Match the parent sample to WISE
+        :param chunk_number: int, number of the declination chunk
+        :param table_name: str, optional, WISE table to match to, default is AllWISE Source Catalog
+        """
 
         # select the parent sample in this declination range
         dec_intervall = self.dec_intervalls[chunk_number]
@@ -198,6 +180,11 @@ class WISEData:
         ] = list(gator_res["cntr"])
 
     def get_photometry_query_string(self, table_name):
+        """
+        Construct a query string to submit to IRSA
+        :param table_name: str, table name
+        :return: str
+        """
         logger.debug(f"constructing query for {table_name}")
         db_name = self.get_db_name(table_name)
         nice_name = self.get_db_name(table_name, nice=True)
@@ -225,6 +212,11 @@ class WISEData:
         return q
 
     def get_photometric_data(self, tables=None):
+        """
+        Load photometric data from the IRSA server for the matched sample
+        :param tables: list like, WISE tables to use for photometry query, defaults to AllWISE and NOEWISER photometry
+        :return: pandas.DataFrame
+        """
 
         if tables is None:
             tables = [
