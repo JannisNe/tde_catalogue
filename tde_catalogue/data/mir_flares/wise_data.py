@@ -27,21 +27,45 @@ class WISEData:
 
     ], columns=['nice_table_name', 'table_name'])
 
-    full_cat_select = """
-    SELECT
-        t.source_id, t.ra, t.dec, t.sigra, t.sigdec, t.cntr
-    """
-
-    where = """
-    WHERE
-        t.nb<2 and 
-        t.na<1 and 
-        t.cc_flags like '00%'"""
-
-    parent_sample_default_keymap = {
-        'dec': 'decMean',
-        'ra': 'raMean'
+    photometry_table_keymap = {
+        'AllWISE Multiepoch Photometry Table': {
+            'w1flux_ep':    'W1_flux',
+            'w1sigflux_ep': 'W1_flux_error',
+            'w2flux_ep':    'W2_flux',
+            'w2sigflux_ep': 'W2_flux_error'
+        },
+        'NEOWISE-R Single Exposure (L1b) Source Table': {
+            'w1flux':       'W1_flux',
+            'w1sigflux':    'W1_flux_error',
+            'w2flux':       'W2_flux',
+            'w2sigflux':    'W2_flux_error'
+        }
     }
+
+    # full_cat_select = """
+    # SELECT
+    #     t.source_id, t.ra, t.dec, t.sigra, t.sigdec, t.cntr
+    # """
+
+    # where = """
+    # WHERE
+    #     t.nb<2 and
+    #     t.na<1 and
+    #     t.cc_flags like '00%'"""
+
+    # parent_sample_default_keymap = {
+    #     'dec': 'decMean',
+    #     'ra': 'raMean'
+    # }
+
+    constraints = [
+        "nb<2",
+        "na<1",
+        "cc_flags like '00%'",
+        "qi_fact >= 1",
+        "saa_sep >= 5",
+        "moon_masked = '00'"
+    ]
 
     data_default_keymap = {
         'id': 'cntr',
@@ -51,15 +75,20 @@ class WISEData:
         'ra_error': 'sigra'
     }
 
-    def __init__(self, min_sep_arcsec=60, n_chunks=8, full_cat_select=full_cat_select, where=where, base_name=base_name,
-                 parent_sample_class=PanstarrsParentSample, **kwargs):
+    def __init__(self,
+                 min_sep_arcsec=60,
+                 n_chunks=8,
+                 # full_cat_select=full_cat_select, where=where,
+                 base_name=base_name,
+                 parent_sample_class=PanstarrsParentSample,
+                 **kwargs):
 
         parent_sample = parent_sample_class()
-        self.full_cat_select = full_cat_select
-        self.where = where
+        # self.full_cat_select = full_cat_select
+        # self.where = where
         self.base_name = base_name
         self.min_sep = min_sep_arcsec * u.arcsec
-        self.store_angles_as = 'degree'
+        # self.store_angles_as = 'degree'
 
         # set up parent sample keys
         self.parent_ra_key = parent_sample.default_keymap['ra']
@@ -67,11 +96,11 @@ class WISEData:
         self.parent_wise_source_id_key = 'WISE_id'
         self.parent_sample_wise_skysep_key = 'sep_to_WISE_source'
         # set up data keys
-        self.data_id_key = kwargs.pop('data_id_key', WISEData.data_default_keymap['id'])
-        self.data_ra_key = kwargs.pop('data_ra_key', WISEData.data_default_keymap['ra'])
-        self.data_dec_key = kwargs.pop('data_dec_key', WISEData.data_default_keymap['dec'])
-        self.data_ra_error_key = kwargs.pop('data_ra_error_key', WISEData.data_default_keymap['ra_error'])
-        self.data_dec_error_key = kwargs.pop('data_dec_error_key', WISEData.data_default_keymap['dec_error'])
+        # self.data_id_key = kwargs.pop('data_id_key', WISEData.data_default_keymap['id'])
+        # self.data_ra_key = kwargs.pop('data_ra_key', WISEData.data_default_keymap['ra'])
+        # self.data_dec_key = kwargs.pop('data_dec_key', WISEData.data_default_keymap['dec'])
+        # self.data_ra_error_key = kwargs.pop('data_ra_error_key', WISEData.data_default_keymap['ra_error'])
+        # self.data_dec_error_key = kwargs.pop('data_dec_error_key', WISEData.data_default_keymap['dec_error'])
 
         # set up directories
         self.cache_dir = os.path.join(cache_dir, base_name)
@@ -82,7 +111,7 @@ class WISEData:
                 os.makedirs(d)
 
         self.parent_sample = parent_sample
-        min_dec = np.floor(min(self.parent_sample.df[self.parent_ra_key]))
+        min_dec = np.floor(min(self.parent_sample.df[self.parent_dec_key]))
         max_dec = np.ceil(max(self.parent_sample.df[self.parent_dec_key]))
         logger.info(f'Declination: ({min_dec}, {max_dec})')
         self.parent_sample.df[self.parent_wise_source_id_key] = ""
@@ -92,6 +121,18 @@ class WISEData:
         self.dec_intervalls = np.degrees(np.arcsin(np.array([sin_bounds[:-1], sin_bounds[1:]]).T))
         logger.info(f'Declination intervalls are {self.dec_intervalls}')
 
+    @staticmethod
+    def get_db_name(table_name, nice=False):
+        source_column = 'nice_table_name' if not nice else 'table_name'
+        target_column = 'table_name' if not nice else 'nice_table_name'
+
+        m = WISEData.table_names[source_column] == table_name
+        if np.any(m):
+            table_name = WISEData.table_names[target_column][m].iloc[0]
+        else:
+            logger.debug(f"{table_name} not in Table. Assuming it is the right name already.")
+        return table_name
+
     def match_all_chunks(self, **table_name):
         for i in range(len(self.dec_intervalls)):
             self.match_single_chunk(i, **table_name)
@@ -99,24 +140,24 @@ class WISEData:
     def match_single_chunk(self, chunk_number,
                            table_name="AllWISE Source Catalog"):
 
-        m = WISEData.table_names['nice_table_name'] == table_name
-        if np.any(m):
-            table_name = WISEData.table_names['table_name'][m].iloc[0]
-
         # select the parent sample in this declination range
         dec_intervall = self.dec_intervalls[chunk_number]
+        logger.debug(f"interval is {dec_intervall}")
         dec_intervall_mask = (self.parent_sample.df[self.parent_dec_key] > min(dec_intervall)) & \
                              (self.parent_sample.df[self.parent_dec_key] < max(dec_intervall))
+        logger.debug(f"Any selected: {np.any(dec_intervall_mask)}")
 
         selected_parent_sample = copy.copy(self.parent_sample.df.loc[dec_intervall_mask,
                                                                      [self.parent_ra_key, self.parent_dec_key]])
         selected_parent_sample.rename(columns={self.parent_dec_key: 'dec',
                                                self.parent_ra_key: 'ra'},
                                       inplace=True)
+        logger.debug(f"{len(selected_parent_sample)} in dec interval")
 
         # write to IPAC formatted table
         _selected_parent_sample_astrotab = Table.from_pandas(selected_parent_sample)
         _parent_sample_declination_band_file = os.path.join(self.cache_dir, f"parent_sample_chunk{chunk_number}.xml")
+        logger.debug(f"writing {len(_selected_parent_sample_astrotab)} objects to {_parent_sample_declination_band_file}")
         _selected_parent_sample_astrotab.write(_parent_sample_declination_band_file, format='ipac')
 
         # use Gator to query IRSA
@@ -125,7 +166,7 @@ class WISEData:
         submit_cmd = f'curl ' \
                      f'-o {_output_file} ' \
                      f'-F filename=@{_parent_sample_declination_band_file} ' \
-                     f'-F catalog={table_name} ' \
+                     f'-F catalog={self.get_db_name(table_name)} ' \
                      f'-F spatial=Upload ' \
                      f'-F uradius={self.min_sep.to("arcsec").value} ' \
                      f'-F outfmt=1 ' \
@@ -156,72 +197,60 @@ class WISEData:
             self.parent_wise_source_id_key
         ] = list(gator_res["cntr"])
 
-    def get_photometric_data(self):
+    def get_photometry_query_string(self, table_name):
+        logger.debug(f"constructing query for {table_name}")
+        db_name = self.get_db_name(table_name)
+        nice_name = self.get_db_name(table_name, nice=True)
 
-        jobs = list()
+        flux_keys = list(self.photometry_table_keymap[nice_name].keys())
+        keys = ['mjd'] + flux_keys
+        id_key = ['cntr_mf'] if 'allwise' in db_name else ['allwise_cntr']
 
-        for i, r in self.parent_sample.df.iterrows():
+        q = 'SELECT' \
+            '   '
+        for k in keys:
+            q += f' {db_name}.{k}'
 
-            cntr = r[self.parent_wise_source_id_key]
+        q += ' mine.wise_id'
+        q += f'FROM {db_name}'
+        q += f'INNER JOIN TAP_UPLOAD.pois AS mine ON {db_name}.{id_key} = mine.WISE_id'
+        q += 'WHERE'
 
-            logger.debug(f"getting photometry for {cntr}")
+        for c in self.constraints:
+            q += f'{db_name}.{c} and'
 
-            ##########################################################
-            #      AllWISE
-            ##########################################################
+        q.strip(" and")
 
-            q = f"""
-                SELECT
-                    mjd, w1flux_ep, w1sigflux_ep, w2flux_ep, w2sigflux_ep
-                FROM
-                    allwise_p3as_mep
-                WHERE
-                    cntr={cntr}
-            """
+        logger.debug(f"\n{q}")
+        return q
 
-            allwise_job = WISEData.service.submit_job(q)
-            allwise_job.run()
+    def get_photometric_data(self, tables=None):
 
-            ##########################################################
-            #      NEOWISE-R
-            ##########################################################
+        if tables is None:
+            tables = [
+                'NEOWISE-R Single Exposure (L1b) Source Table',
+                'AllWISE Multiepoch Photometry Table'
+            ]
 
-            q = f"""
-            SELECT
-                mjd, w1flux, w1sigflux, w2flux, w2sigflux
-            FROM
-                neowiser_p1bs_psd
-            WHERE
-                allwise_cntr={cntr}
-            """
+        jobs = dict()
 
-            neowiser_job = WISEData.service.submit_job(q)
-            neowiser_job.run()
+        for t in tables:
+            qstring = self.get_photometry_query_string(t)
+            job = WISEData.service.submit_job(qstring)
+            job.run()
+            logger.info(f'submitted job for {t}: ')
+            logger.info(f'Job: {job.url}; {job.phase}')
+            jobs[t] = job
 
-            jobs.append([allwise_job, neowiser_job, cntr])
+        lightcurves = list()
+        for t, job in jobs.items():
+            logger.info(f"Waiting on query of {t}")
+            logger.info(" ........")
+            job.wait()
 
-        for these_jobs in tqdm(jobs, desc='collecting output '):
+            logger.info('Done!')
+            lightcurve = job.fetch_result().to_table().to_pandas()
+            lightcurves.append(lightcurve.rename(columns=self.photometry_table_keymap[t]))
 
-            these_jobs[0].wait()
-            allwise_lightcurve = these_jobs[0].fetch_result().to_table().to_pandas()
-            allwise_lightcurve = allwise_lightcurve.rename(
-                columns={
-                    'w1flux_ep': 'W1_flux',
-                    'w1sigflux_ep': 'W1_flux_error',
-                    'w2flux_ep': 'W2_flux',
-                    'w2sigflux_ep': 'W2_flux_error'
-                }
-            )
-
-            these_jobs[1].wait()
-            neowiser_lightcurve = these_jobs[1].fetch_result().to_table().to_pandas()
-            neowiser_lightcurve = neowiser_lightcurve.rename(
-                columns={
-                    'w1flux': 'W1_flux',
-                    'w1sigflux': 'W1_flux_error',
-                    'w2flux': 'W2_flux',
-                    'w2sigflux': 'W2_flux_error'
-                }
-            )
-
-            combined_lightcurve = allwise_lightcurve.append(neowiser_lightcurve)
+        combined_lightcurve = pd.concat(lightcurves)
+        return combined_lightcurve
