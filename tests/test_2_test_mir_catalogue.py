@@ -57,52 +57,16 @@ class WISEDataTestVersion(WISEData):
     """
     Same as WISEData but only for one confined region of the sky
     """
-
     base_name = 'test/' + WISEData.base_name
-    where = f"""
-        WHERE
-            CONTAINS(POINT('ICRS',ra, dec), CIRCLE('ICRS',{test_ra},{test_dec},{test_radius_arcsec/3600}))=1"""
 
     def __init__(self):
-        super().__init__(n_chunks=3,
-                         where=WISEDataTestVersion.where,
+        super().__init__(n_chunks=1,
                          base_name=WISEDataTestVersion.base_name,
                          parent_sample_class=PanstarrsParentSampleTestVersion)
-        self._cached_tap_output = None
 
-    def get_tap_output(self, chunk_number, table_name):
-        dec_intervall = self.dec_intervalls[chunk_number]
-        logger.info(f'getting TAP output for DEC interval {dec_intervall}')
-
-        if isinstance(self._cached_tap_output, type(None)):
-            logger.debug('No cached TAP output')
-
-            queue = f"""
-            SELECT
-                source_id, ra, dec, sigra, sigdec, nb, na, cc_flags, cntr
-            FROM
-                {table_name}
-            WHERE
-                CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS',{test_ra},{test_dec},{test_radius_arcsec/3600}))
-            """
-
-            logger.info(f"Queue: {queue}")
-            query_job = WISEData.service.submit_job(queue)
-            query_job.run()
-            logger.info(f'Job: {query_job.url}; {query_job.phase}')
-            logger.info('waiting ...')
-            query_job.wait()
-            logger.info('Done!')
-
-            self._cached_tap_output = query_job.fetch_result().to_table().to_pandas()
-
-        m = (self._cached_tap_output.nb < 2) & (self._cached_tap_output.na < 1)
-        dec_m = (self._cached_tap_output.dec > min(dec_intervall)) & (self._cached_tap_output.dec < max(dec_intervall))
-        cc_m = np.array([cc.startswith('00') for cc in self._cached_tap_output.cc_flags])
-        tap_res = copy.copy(self._cached_tap_output[m & cc_m & dec_m])
-        logger.debug(f'Found {len(tap_res)} objects.')
-
-        return tap_res
+    def clean_up(self):
+        logger.info(f"removing {self.cache_dir}")
+        shutil.rmtree(self.cache_dir)
 
 
 class TestMIRFlareCatalogue(unittest.TestCase):
@@ -129,13 +93,10 @@ class TestMIRFlareCatalogue(unittest.TestCase):
         self.assertLess(sep[closest_ind][0], 0.5 * u.arcsec)
         wise_data.parent_sample.plot_cutout(closest_ind[0], arcsec=40)
 
-    def test_c_test_real_wisedata(self):
-        logger.info('\n\n Testing real WISE Data \n')
-        wise_data = WISEData(n_chunks=20)
-        wise_data.match_single_chunk(10)
-
     @classmethod
     def tearDownClass(cls):
         logger.info('\n clean up \n')
+        wise_data = WISEDataTestVersion()
+        wise_data.clean_up()
         pps = PanstarrsParentSampleTestVersion()
         pps.clean_up()
