@@ -1,10 +1,10 @@
-import os
+import os, subprocess, copy
 import pandas as pd
 import numpy as np
 import pyvo as vo
 from tqdm import tqdm
-from astropy.coordinates import SkyCoord, Angle
 import astropy.units as u
+from astropy.table import Table
 
 from tde_catalogue import main_logger, cache_dir, plots_dir
 from tde_catalogue.data.mir_flares import base_name as mir_base_name
@@ -82,13 +82,13 @@ class WISEData:
                 os.makedirs(d)
 
         self.parent_sample = parent_sample
-        min_dec = np.floor(min(self.parent_sample.df.decMean))
-        max_dec = np.ceil(max(self.parent_sample.df.decMean))
+        min_dec = np.floor(min(self.parent_sample.df[self.parent_ra_key]))
+        max_dec = np.ceil(max(self.parent_sample.df[self.parent_dec_key]))
         logger.info(f'Declination: ({min_dec}, {max_dec})')
         self.parent_sample.df[self.parent_wise_source_id_key] = ""
         self.parent_sample.df[self.parent_sample_wise_skysep_key] = np.inf
 
-        sin_bounds = np.linspace(np.sin(np.radians(min_dec)), np.sin(np.radians(max_dec)), n_chunks)
+        sin_bounds = np.linspace(np.sin(np.radians(min_dec)), np.sin(np.radians(max_dec)), n_chunks+1, endpoint=True)
         self.dec_intervalls = np.degrees(np.arcsin(np.array([sin_bounds[:-1], sin_bounds[1:]]).T))
         logger.info(f'Declination intervalls are {self.dec_intervalls}')
 
@@ -96,84 +96,65 @@ class WISEData:
         for i in range(len(self.dec_intervalls)):
             self.match_single_chunk(i, **table_name)
 
-    def get_tap_output(self, chunk_number, table_name):
-        dec_intervall = self.dec_intervalls[chunk_number]
-        where = f"""{self.where} and
-                    t.dec>{dec_intervall[0]} and
-                    t.dec<{dec_intervall[1]}
-                """
-
-        queue = f"""
-                {self.full_cat_select}
-                FROM
-                    {table_name} t
-                {where}
-                """
-
-        logger.info(f"Queue: {queue}")
-        query_job = WISEData.service.submit_job(queue)
-        query_job.run()
-        logger.info(f'Job: {query_job.url}; {query_job.phase}')
-        logger.info('waiting ...')
-        query_job.wait()
-        logger.info('Done!')
-
-        tap_res = query_job.fetch_result().to_table().to_pandas()
-        return tap_res
-
     def match_single_chunk(self, chunk_number,
                            table_name="AllWISE Source Catalog"):
 
         m = WISEData.table_names['nice_table_name'] == table_name
         if np.any(m):
-            table_name = WISEData.table_names['table_name'][m]
+            table_name = WISEData.table_names['table_name'][m].iloc[0]
 
-        tap_res = self.get_tap_output(chunk_number, table_name)
+        # select the parent sample in this declination range
+        dec_intervall = self.dec_intervalls[chunk_number]
+        dec_intervall_mask = (self.parent_sample.df[self.parent_dec_key] > min(dec_intervall)) & \
+                             (self.parent_sample.df[self.parent_dec_key] < max(dec_intervall))
 
-        logger.info(f'matching {len(tap_res)} objects from query result to '
-                    f'{len(self.parent_sample.df)} objects from parent sample')
+        selected_parent_sample = copy.copy(self.parent_sample.df.loc[dec_intervall_mask,
+                                                                     [self.parent_ra_key, self.parent_dec_key]])
+        selected_parent_sample.rename(columns={self.parent_dec_key: 'dec',
+                                               self.parent_ra_key: 'ra'},
+                                      inplace=True)
 
-        if len(tap_res) == 0:
-            logger.warning(f'No objects to match to! Skipping!')
+        # write to IPAC formatted table
+        _selected_parent_sample_astrotab = Table.from_pandas(selected_parent_sample)
+        _parent_sample_declination_band_file = os.path.join(self.cache_dir, f"parent_sample_chunk{chunk_number}.xml")
+        _selected_parent_sample_astrotab.write(_parent_sample_declination_band_file, format='ipac')
 
-        else:
-            parent_dec = self.parent_sample.df[self.parent_dec_key]
-            parent_ra = self.parent_sample.df[self.parent_ra_key]
+        # use Gator to query IRSA
+        # TODO: use the full_cat_select input!
+        _output_file = os.path.join(self.cache_dir, f"wise_data_chunk{chunk_number}.tbl")
+        submit_cmd = f'curl ' \
+                     f'-o {_output_file} ' \
+                     f'-F filename=@{_parent_sample_declination_band_file} ' \
+                     f'-F catalog={table_name} ' \
+                     f'-F spatial=Upload ' \
+                     f'-F uradius={self.min_sep.to("arcsec").value} ' \
+                     f'-F outfmt=1 ' \
+                     f'-F one_to_one=1 ' \
+                     f'-F selcols=designation,source_id,ra,dec,sigra,sigdec,cntr ' \
+                     f'"https://irsa.ipac.caltech.edu/cgi-bin/Gator/nph-query"'
 
-            dd, dde = tap_res[self.data_dec_key], tap_res[self.data_dec_error_key]
-            dd_minus_dde = dd - dde
-            dd_plus_dde = dd + dde
+        logger.debug(f'submit command: {submit_cmd}')
+        process = subprocess.Popen(submit_cmd, stdout=subprocess.PIPE, shell=True)
+        out_msg, err_msg = process.communicate()
+        logger.info(out_msg.decode())
+        if err_msg:
+            logger.error(err_msg.decode())
 
-            chunk_mask = (parent_dec >= min(dd_minus_dde)) & (parent_dec <= max(dd_plus_dde))
-            chunk_indices = np.where(chunk_mask)[0]
-            logger.debug(f'{len(parent_ra[chunk_mask])} in this chunk')
+        # load the result file
+        gator_res = Table.read(_output_file, format='ipac')
+        logger.debug(f"found {len(gator_res)} results")
 
-            logger.debug('doing the catalogue matching ...')
-            parent_sample_coord = SkyCoord(parent_ra[chunk_mask] * u.degree,
-                                           parent_dec[chunk_mask] * u.degree)
-            query_tap_result_coord = SkyCoord(tap_res[self.data_ra_key] * u.degree,
-                                              tap_res[self.data_dec_key] * u.degree)
+        # insert the corresponding separation to the WISE source into the parent sample
+        self.parent_sample.df.loc[
+            dec_intervall_mask,
+            self.parent_sample_wise_skysep_key
+        ] = list(gator_res["dist_x"])
 
-            index, sky_sep, _ = parent_sample_coord.match_to_catalog_sky(query_tap_result_coord)
-            logger.debug(f'Index: {index[:10]} ...')
-            logger.debug(f'skyse: {sky_sep[:10]} ...')
-
-            logger.debug(f'shape of index is {np.shape(index)}')
-            new_closest_source_mask = sky_sep.to(self.store_angles_as).value < self.parent_sample.df[self.parent_sample_wise_skysep_key][chunk_mask]
-            new_closest_source_index = index[new_closest_source_mask]
-            logger.debug(f'shape of new source mask is {np.shape(new_closest_source_mask)}')
-            source_ids = tap_res.iloc[new_closest_source_index][self.data_id_key]
-            source_skysep = sky_sep[new_closest_source_mask].to(self.store_angles_as).value
-
-            self.parent_sample.df.loc[
-                chunk_indices[new_closest_source_mask],
-                self.parent_sample_wise_skysep_key
-            ] = list(source_skysep)
-
-            self.parent_sample.df.loc[
-                chunk_indices[new_closest_source_mask],
-                self.parent_wise_source_id_key
-            ] = list(source_ids)
+        # insert the corresponding WISE IDs into the parent sample
+        self.parent_sample.df.loc[
+            dec_intervall_mask,
+            self.parent_wise_source_id_key
+        ] = list(gator_res["cntr"])
 
     def get_photometric_data(self):
 
