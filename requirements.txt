@@ -11,4 +11,3 @@ pillow==8.3.1
 requests==2.26.0
 git+git://github.com/dfm/casjobs@main
 git+git://github.com/JannisNe/mastcasjobs@master
-git+git://github.com/sciserver/SciScript-Python/tree/master/py3@master
