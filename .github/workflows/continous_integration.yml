@@ -44,8 +44,8 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          git clone http://github.com/sciserver/SciScript-Python.git
-          python SciScript-Python/Install.py sciserver-v2.1.0
+          git clone http://github.com/sciserver/SciScript-Python.git .
+          python ./SciScript-Python/Install.py sciserver-v2.1.0
 
       # Runs a set of commands using the runners shell
       - name: Test the code
