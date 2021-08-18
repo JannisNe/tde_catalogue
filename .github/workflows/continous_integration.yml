@@ -50,6 +50,8 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          ls
+          ls SciScript-Python
           python SciScript-Python/Install.py sciserver-v2.1.0
 
       # Runs a set of commands using the runners shell
