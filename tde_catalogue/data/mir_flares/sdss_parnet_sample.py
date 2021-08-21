@@ -24,6 +24,7 @@ class SDSSParentSample:
                  store=True):
 
         uid, pw = get_sdss_credentials()
+        logger.debug(f"logging in with {uid}")
         Authentication.login(uid, pw)
 
         self.base_name = base_name
