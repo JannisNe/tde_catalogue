@@ -1,12 +1,14 @@
-import unittest, os, shutil, copy
+import unittest, shutil
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy import units as u
 
-from tde_catalogue import main_logger, cache_dir, plots_dir
+from tde_catalogue import main_logger, cache_dir
 from tde_catalogue.utils.mirong_sample import get_mirong_sample
 from tde_catalogue.data.mir_flares.panstarrs_parent_sample import PanstarrsParentSample
 from tde_catalogue.data.mir_flares.wise_data import WISEData
+from tde_catalogue.data.mir_flares.sdss_parnet_sample import SDSSParentSample, CasJobs
+from tde_catalogue.data.mir_flares.combined_parent_sample import CombinedParentSample
 
 
 main_logger.setLevel('DEBUG')
@@ -19,6 +21,11 @@ mirong_test_id = 28
 test_ra = mirong_sample['RA'].iloc[mirong_test_id]
 test_dec = mirong_sample['DEC'].iloc[mirong_test_id]
 test_radius_arcsec = 3600
+
+
+###########################################################################################################
+# START DEFINING TEST CLASSES      #
+####################################
 
 
 class PanstarrsParentSampleTestVersion(PanstarrsParentSample):
@@ -53,6 +60,48 @@ class PanstarrsParentSampleTestVersion(PanstarrsParentSample):
         self.mastcasjob.drop_table(self.MAST_table_name)
 
 
+class SDSSParentSampleTestVersion(SDSSParentSample):
+    base_name = 'test/' + SDSSParentSample.base_name
+    casjobs_table_name = SDSSParentSample.casjobs_table_name + '_test'
+
+    def __init__(self):
+        super().__init__(self.base_name)
+
+    def clean_up(self):
+        logger.info(f"removing {self.cache_dir}")
+        shutil.rmtree(self.cache_dir)
+        logger.info(f"dropping {self.casjobs_table_name} from CasJobs")
+        df = CasJobs.executeQuery(sql="DROP TABLE " + self.casjobs_table_name, context="MyDB", format="pandas")
+        logger.debug(df)
+
+    @property
+    def query(self):
+        q = f"""
+        SELECT
+            o.ra, o.dec, o.specObjID, o.bestObjID, o.fluxObjID, o.targetObjID, o.plateID, o.sciencePrimary
+        FROM
+            fGetNearbyObjEq({test_ra},{test_dec},{test_radius_arcsec}/60.0) nb
+            inner join specObj o on nb.objID = o.bestObjID
+        INTO
+            MyDB.{self.casjobs_table_name}
+        WHERE
+            class = 'GALAXY'
+        """
+        return q
+
+
+class CombinedSampleTestVersion(CombinedParentSample):
+    base_name = 'test/' + CombinedParentSample.base_name
+
+    def __init__(self):
+        super().__init__([SDSSParentSampleTestVersion, PanstarrsParentSampleTestVersion],
+                         base_name=CombinedSampleTestVersion.base_name)
+
+    def clean_up(self):
+        logger.info(f"removing {self.cache_dir}")
+        shutil.rmtree(self.cache_dir)
+
+
 class WISEDataTestVersion(WISEData):
     """
     Same as WISEData but only for one confined region of the sky
@@ -62,11 +111,16 @@ class WISEDataTestVersion(WISEData):
     def __init__(self):
         super().__init__(n_chunks=1,
                          base_name=WISEDataTestVersion.base_name,
-                         parent_sample_class=PanstarrsParentSampleTestVersion)
+                         parent_sample_class=CombinedSampleTestVersion)
 
     def clean_up(self):
         logger.info(f"removing {self.cache_dir}")
         shutil.rmtree(self.cache_dir)
+
+
+####################################
+# END DEFINING TEST CLASSES        #
+###########################################################################################################
 
 
 class TestMIRFlareCatalogue(unittest.TestCase):
@@ -79,13 +133,22 @@ class TestMIRFlareCatalogue(unittest.TestCase):
         pps.plot_skymap()
         pps.plot_cutout(0)
 
-    def test_b_test_wise_data(self):
+    def test_b_test_sdss_parent_sample(self):
+        logger.info("\n\nTesting SDSS Parent Sample")
+        logger.info("query CasJobs")
+        SDSSParentSampleTestVersion()
+
+    def test_c_test_combined_sample(self):
+        logger.info("\n\ntesting Combined Parent Sample")
+        CombinedSampleTestVersion()
+
+    def test_d_test_wise_data(self):
         logger.info('\n\n Testing WISE Data \n')
         wise_data = WISEDataTestVersion()
         wise_data.match_all_chunks()
 
         df = wise_data.parent_sample.df
-        c1 = SkyCoord(df.raMean * u.degree, df.decMean * u.degree)
+        c1 = SkyCoord(df.ra * u.degree, df.dec * u.degree)
         c2 = SkyCoord(float(test_ra) * u.degree, float(test_dec) * u.degree)
         sep = c1.separation(c2)
         closest_ind = np.argsort(sep)
@@ -100,3 +163,7 @@ class TestMIRFlareCatalogue(unittest.TestCase):
         wise_data.clean_up()
         pps = PanstarrsParentSampleTestVersion()
         pps.clean_up()
+        sdss_test = SDSSParentSampleTestVersion()
+        sdss_test.clean_up()
+        combined_sample = CombinedSampleTestVersion()
+        combined_sample.clean_up()
