@@ -135,8 +135,11 @@ class CombinedParentSample:
         res = list()
         for p in np.atleast_1d(self.parent_sample_classes):
             inst = p()
-            res.append(inst.plot_cutout(*args, **kwargs))
-        return res
+            r = inst.plot_cutout(*args, **kwargs)
+            if not isinstance(r, type(None)):
+                res.append(r)
+        if len(res) > 0:
+            return res
 
 
 if __name__ == '__main__':
