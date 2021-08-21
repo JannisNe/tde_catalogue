@@ -23,6 +23,9 @@ class SDSSParentSample:
                  base_name=base_name,
                  store=True):
 
+        uid, pw = get_sdss_credentials()
+        Authentication.login(uid, pw)
+
         self.base_name = base_name
         self._store = store
 
@@ -41,9 +44,6 @@ class SDSSParentSample:
         if (not os.path.isfile(self.local_sdss_sample_copy)) or (not self._store):
             # If there is no local copy, get the table from CasJobs
             logger.info('No local copy of Panstarrs query result. Getting info from CasJobs')
-
-            uid, pw = get_sdss_credentials()
-            Authentication.login(uid, pw)
 
             if not self._table_in_casjobs:
                 # If the query result is not on CasJobs, do the query
