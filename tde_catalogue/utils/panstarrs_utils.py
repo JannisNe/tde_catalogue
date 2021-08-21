@@ -226,7 +226,8 @@ def crossmatch_to_panstarrs(file, radius):
     r = requests.post(crossmatch_url, params=dict(radius=radius_arcsec), files=dict(file=file))
 
     if r.status_code != 200:
-        raise ValueError(f'Crossmatch failed with status {r.status_code}: {r.text}')
+        txt = r.text if r.text else r.reason
+        raise ValueError(f'Crossmatch failed with status {r.status_code}: {txt}')
 
     restab = pd.read_csv(io.StringIO(r.text))
     uniuqe_ids = restab['_searchID_'].unique()
