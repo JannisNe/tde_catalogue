@@ -1,11 +1,9 @@
-import os
-import mastcasjobs
+import os, mastcasjobs, argparse
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-from tde_catalogue import main_logger
-from tde_catalogue import cache_dir, plots_dir
+from tde_catalogue import main_logger, cache_dir, plots_dir
 from tde_catalogue.utils.panstarrs_utils import getgrayim
 from tde_catalogue.data.mir_flares import base_name as mir_base_name
 
@@ -17,9 +15,8 @@ class PanstarrsParentSample:
 
     base_name = mir_base_name + '/panstarrs_parent_sample'
     MAST_table_name = 'test_table15_with_psc'
-    ps_score_threshold = 0.7
-    sg_score_threshold = 0
-    minDetections = 5
+    ps_score_threshold = 0
+    minDetections = 10
 
     default_keymap = {
         'dec': 'decMean',
@@ -30,14 +27,12 @@ class PanstarrsParentSample:
                  base_name=base_name,
                  MAST_table_name=MAST_table_name,
                  ps_score_threshold=ps_score_threshold,
-                 sg_score_threshold=sg_score_threshold,
                  minDetections=minDetections,
                  store=True):
 
         self.base_name = base_name
         self.MAST_table_name = MAST_table_name
         self.ps_score_threshold = ps_score_threshold
-        self.sg_score_threshold = sg_score_threshold
         self.minDetections = minDetections
         self._store = store
 
@@ -95,8 +90,10 @@ class PanstarrsParentSample:
                 MyDB.{self.MAST_table_name}
             FROM
                 ObjectThin o 
-                inner join HLSP_PS1_PSC.pointsource_scores psc on psc.objid=o.objid and psc.ps_score<{self.ps_score_threshold} and o.nDetections>{self.minDetections} 
-                inner join HLSP_PS1_STRM.catalogRecordRowStore sgs on sgs.objid=o.objid and sgs.prob_star/sgs.prob_galaxy<{self.sg_score_threshold}
+                inner join HLSP_PS1_PSC.pointsource_scores psc 
+                    on psc.objid=o.objid 
+                        and psc.ps_score<={self.ps_score_threshold} 
+                        and o.nDetections>={self.minDetections} 
             """
         return q
 
@@ -183,3 +180,13 @@ class PanstarrsParentSample:
     ####################################
     # END make some plotting functions #
     ###################################################################################################
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-l', '--logging_level', type=str, default='INFO')
+    cfg = parser.parse_args()
+
+    main_logger.setLevel(cfg.logging_level)
+
+    PanstarrsParentSample()
