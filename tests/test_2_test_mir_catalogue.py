@@ -134,12 +134,12 @@ class TestMIRFlareCatalogue(unittest.TestCase):
         pps.plot_cutout(0)
 
     def test_b_test_sdss_parent_sample(self):
-        logger.info("\n\nTesting SDSS Parent Sample")
+        logger.info("\n\n Testing SDSS Parent Sample\n")
         logger.info("query CasJobs")
         SDSSParentSampleTestVersion()
 
     def test_c_test_combined_sample(self):
-        logger.info("\n\ntesting Combined Parent Sample")
+        logger.info("\n\n Testing Combined Parent Sample\n")
         CombinedSampleTestVersion()
 
     def test_d_test_wise_data(self):
