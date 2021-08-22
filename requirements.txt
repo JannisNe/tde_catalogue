@@ -10,5 +10,6 @@ pyvo==1.1
 pillow==8.3.1
 requests==2.26.0
 scikit-image==0.18.2
+OpenSSL==20.0.1
 git+git://github.com/dfm/casjobs@main
 git+git://github.com/JannisNe/mastcasjobs@master
