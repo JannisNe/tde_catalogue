@@ -64,8 +64,9 @@ jobs:
         env:
           CASJOBS_WSID: ${{ secrets.CASJOBS_WSID }}
           CASJOBS_PW: ${{ secrets.CASJOBS_PW }}
-          SDSS_USERID: test_account
-          SDSS_USERPW: justsomerandompassword
+          SDSS_USERID: ${{ secrets.SDSS_USERID }}
+          SDSS_USERPW: ${{ secrets.SDSS_USERPW }}
+          SKYSERVER_TOKEN: ${{ secrets.SKYSERVER_TOKEN }}
         run: |
           coverage run --concurrency=multiprocessing -m unittest discover tests/
           coverage combine

@@ -1,10 +1,10 @@
-import os, argparse, logging
+import os, argparse, logging, requests
 import pandas as pd
 from SciServer import CasJobs, Authentication
 
 from tde_catalogue import main_logger, cache_dir, plots_dir
 from tde_catalogue.data.mir_flares import base_name as mir_base_name
-from tde_catalogue.utils.sdss_utils import get_sdss_credentials, plot_cutout
+from tde_catalogue.utils.sdss_utils import get_sdss_credentials, plot_cutout, get_skyserver_token
 from tde_catalogue.data.mir_flares.parent_sample import ParentSample
 
 
@@ -24,9 +24,13 @@ class SDSSParentSample(ParentSample):
                  base_name=base_name,
                  store=True):
 
-        uid, pw = get_sdss_credentials()
-        logger.debug(f"logging in with {uid}")
-        Authentication.login(uid, pw)
+        try:
+            uid, pw = get_sdss_credentials()
+            logger.debug(f"logging in with {uid}")
+            Authentication.login(uid, pw)
+        except requests.exceptions.SSLError:
+            token = get_skyserver_token()
+            Authentication.setToken(token)
 
         self.base_name = base_name
         self._store = store

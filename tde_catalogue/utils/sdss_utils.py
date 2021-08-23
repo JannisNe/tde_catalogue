@@ -11,6 +11,10 @@ def get_sdss_credentials():
     return os.environ['SDSS_USERID'], os.environ['SDSS_USERPW']
 
 
+def get_skyserver_token():
+    return os.getenv("SKYSERVER_TOKEN")
+
+
 def plot_cutout(ra, dec, arcsec=20, arcsec_per_px=1, interactive=False, fn=None):
     ang_px = int(arcsec / arcsec_per_px)
     ang_deg = arcsec / 3600
