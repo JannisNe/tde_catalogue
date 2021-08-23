@@ -66,9 +66,6 @@ class CombinedParentSample(ParentSample):
             for p in parent_samples
         ]
 
-        # clear parent_samples for saving memory
-        del parent_samples
-
         logger.debug(f"initialising SkyCoord's")
         skycoords = [
             SkyCoord(df[self.default_keymap['ra']], df[self.default_keymap['dec']],
@@ -116,13 +113,41 @@ class CombinedParentSample(ParentSample):
         new_small_cat = dfs[sorted_length[0]]
         new_small_cat.index = new_index.astype(int)
         # concatenate both catalogs
-        big_cat = dfs[sorted_length[1]]
+        big_cat = dfs[sorted_length[1]].copy()
+
+        # rename the columns so it gets clear where they come from
+        new_small_cat = new_small_cat.rename(
+            columns={
+                k: f"{parent_samples[sorted_length[0]].base_name}_{k}"
+                for k in new_small_cat.columns
+            }
+        )
+
+        big_cat = big_cat.rename(
+            columns={
+                k: f"{parent_samples[sorted_length[1]].base_name}_{k}"
+                for k in big_cat.columns
+            }
+        )
+
         combined_cat = pd.concat([big_cat, new_small_cat], axis=1)
         # ensure that the length is correct
         if not len(combined_cat) == combined_cat_len:
             raise Exception
+        # set ra and dec column
+        for k, v in self.default_keymap.items():
+            # use the values from the small cat where possible
+            small_cat_k = f"{parent_samples[sorted_length[0]].base_name}_{v}"
+            combined_cat[v] = combined_cat[small_cat_k]
+            # where values are missing insert from big cat
+            big_cat_k = f"{parent_samples[sorted_length[1]].base_name}_{v}"
+            missing_values_m = combined_cat[v].isna()
+            combined_cat.loc[missing_values_m, v] = combined_cat[big_cat_k][missing_values_m]
 
         self.df = combined_cat
+
+        # clear parent_samples for saving memory
+        del parent_samples
 
         ###################
         # END COMBINING   #
