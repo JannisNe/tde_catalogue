@@ -203,6 +203,8 @@ class WISEData:
             self.parent_wise_source_id_key
         ] = list(gator_res["cntr"])
 
+        self.parent_sample.save_local()
+
     ###################################################
     # END MATCH PARENT SAMPLE TO WISE SOURCES         #
     ###########################################################################################################
@@ -211,11 +213,11 @@ class WISEData:
     # START GET PHOTOMETRY DATA       #
     ###################################
 
-    def get_photometric_data(self, tables=None):
+    def get_photometric_data(self, tables=None, perc=1):
         """
         Load photometric data from the IRSA server for the matched sample
         :param tables: list like, WISE tables to use for photometry query, defaults to AllWISE and NOEWISER photometry
-        :return: pandas.DataFrame
+        :param perc: float, percentage of sources to load photometry for, default 1
         """
 
         if tables is None:
@@ -224,7 +226,7 @@ class WISEData:
                 'AllWISE Multiepoch Photometry Table'
             ]
 
-        self._query_for_photometry(tables)
+        self._query_for_photometry(tables, perc)
         self._select_individual_lightcurves_and_bin()
         self._cache_binned_lightcurves()
 
@@ -254,10 +256,18 @@ class WISEData:
         logger.debug(f"\n{q}")
         return q
 
-    def _query_for_photometry(self, tables):
+    def _query_for_photometry(self, tables, perc):
 
         # only integers can be uploaded
-        wise_id = [int(idd) for idd in self.parent_sample.df[self.parent_wise_source_id_key]]
+        wise_id = np.array([int(idd) for idd in self.parent_sample.df[self.parent_wise_source_id_key]])
+        logger.debug(f"{len(wise_id)} IDs in total")
+
+        # if perc is smaller than one select only a subset of wise IDs
+        if perc < 1:
+            logger.debug(f"Getting {perc:.2f} % of IDs")
+            N_ids = int(round(len(wise_id) * perc))
+            wise_id = np.random.default_rng().choice(wise_id, N_ids, replace=False, shuffle=False)
+            logger.debug(f"selected {len(wise_id)} IDs")
         upload_table = Table({'wise_id': wise_id})
 
         # ----------------------------------------------------------------------
