@@ -101,6 +101,10 @@ class WISEData:
         # END SET-UP            #
         #######################################################################################
 
+        #######################################################################################
+        # START CHUNK MASK      #
+        #########################
+
         self.parent_sample = parent_sample
         min_dec = np.floor(min(self.parent_sample.df[self.parent_dec_key]))
         max_dec = np.ceil(max(self.parent_sample.df[self.parent_dec_key]))
@@ -111,6 +115,16 @@ class WISEData:
         sin_bounds = np.linspace(np.sin(np.radians(min_dec)), np.sin(np.radians(max_dec)), n_chunks+1, endpoint=True)
         self.dec_intervalls = np.degrees(np.arcsin(np.array([sin_bounds[:-1], sin_bounds[1:]]).T))
         logger.info(f'Declination intervalls are {self.dec_intervalls}')
+
+        self.dec_interval_masks = list()
+        for i, dec_intervall in enumerate(self.dec_intervalls):
+            dec_intervall_mask = (self.parent_sample.df[self.parent_dec_key] > min(dec_intervall)) & \
+                                 (self.parent_sample.df[self.parent_dec_key] < max(dec_intervall))
+            self.dec_interval_masks.append(dec_intervall_mask)
+
+        #########################
+        # END CHUNK MASK        #
+        #######################################################################################
 
     @staticmethod
     def get_db_name(table_name, nice=False):
@@ -146,11 +160,7 @@ class WISEData:
         :param table_name: str, optional, WISE table to match to, default is AllWISE Source Catalog
         """
 
-        # select the parent sample in this declination range
-        dec_intervall = self.dec_intervalls[chunk_number]
-        logger.debug(f"interval is {dec_intervall}")
-        dec_intervall_mask = (self.parent_sample.df[self.parent_dec_key] > min(dec_intervall)) & \
-                             (self.parent_sample.df[self.parent_dec_key] < max(dec_intervall))
+        dec_intervall_mask = self.dec_interval_masks[chunk_number]
         logger.debug(f"Any selected: {np.any(dec_intervall_mask)}")
 
         selected_parent_sample = copy.copy(self.parent_sample.df.loc[dec_intervall_mask,
@@ -277,11 +287,12 @@ class WISEData:
         jobs = dict()
         for t in np.atleast_1d(tables):
             qstring = self._get_photometry_query_string(t)
-            job = WISEData.service.submit_job(qstring, uploads={'ids': upload_table})
-            job.run()
-            logger.info(f'submitted job for {t}: ')
-            logger.debug(f'Job: {job.url}; {job.phase}')
-            jobs[t] = job
+            for i, m in enumerate(self.dec_interval_masks):
+                job = WISEData.service.submit_job(qstring, uploads={'ids': upload_table[m]})
+                job.run()
+                logger.info(f'submitted job for {t} for chunk {i}: ')
+                logger.debug(f'Job: {job.url}; {job.phase}')
+                jobs[f"chunk{i}_{t}"] = job
 
         lightcurves = list()
         for t, job in jobs.items():
