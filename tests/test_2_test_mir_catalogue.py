@@ -1,4 +1,4 @@
-import unittest, shutil
+import unittest, shutil, argparse, time
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy import units as u
@@ -167,3 +167,33 @@ class TestMIRFlareCatalogue(unittest.TestCase):
         sdss_test.clean_up()
         combined_sample = CombinedSampleTestVersion()
         combined_sample.clean_up()
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-l', '--logging_level', type=str, default='INFO', const='DEBUG', nargs='?')
+    parser.add_argument('-p', '--percent', type=float, default=1)
+    parser.add_argument('-fn', '--filename', type=str, default='')
+    cfg = parser.parse_args()
+
+    main_logger.setLevel(cfg.logging_level)
+
+    start_time = time.time()
+    wise_data = WISEDataTestVersion()
+    init_time = time.time()
+    wise_data.match_all_chunks()
+    match_time = time.time()
+    wise_data.get_photometric_data(perc=cfg.percent)
+    phot_time = time.time()
+
+    txt = f"{cfg.percent} of {len(wise_data.parent_sample.df)} sources:\n" \
+          f"Total Time: {phot_time - start_time} \n" \
+          f"\tInitialising:\t{init_time - start_time} \n" \
+          f"\tMatching:\t{match_time - init_time} \n" \
+          f"\tPhotometry\t{phot_time - match_time}"
+    logger.info(txt)
+
+    if cfg.filename:
+        logger.info(f'writing to {cfg.filename}')
+        with open(cfg.filename, 'w') as f:
+            f.write(txt)
