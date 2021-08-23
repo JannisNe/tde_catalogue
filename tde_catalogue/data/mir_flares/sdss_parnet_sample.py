@@ -5,12 +5,13 @@ from SciServer import CasJobs, Authentication
 from tde_catalogue import main_logger, cache_dir, plots_dir
 from tde_catalogue.data.mir_flares import base_name as mir_base_name
 from tde_catalogue.utils.sdss_utils import get_sdss_credentials, plot_cutout
+from tde_catalogue.data.mir_flares.parent_sample import ParentSample
 
 
 logger = main_logger.getChild(__name__)
 
 
-class SDSSParentSample:
+class SDSSParentSample(ParentSample):
 
     base_name = f"{mir_base_name}/sdss_parent_sample"
     casjobs_table_name = "spectroscopic_galaxies"
@@ -42,7 +43,7 @@ class SDSSParentSample:
         # START make CASJOBS query #
         ############################
 
-        if (not os.path.isfile(self.local_sdss_sample_copy)) or (not self._store):
+        if (not os.path.isfile(self.local_sample_copy)) or (not self._store):
             # If there is no local copy, get the table from CasJobs
             logger.info('No local copy of Panstarrs query result. Getting info from CasJobs')
 
@@ -61,8 +62,8 @@ class SDSSParentSample:
             logger.info(f'got {len(self.df)} objects')
 
             if self._store:
-                logger.debug(f'saving to {self.local_sdss_sample_copy}')
-                self.df.to_csv(self.local_sdss_sample_copy)
+                logger.debug(f'saving to {self.local_sample_copy}')
+                self.df.to_csv(self.local_sample_copy)
 
         ##########################
         # END make CASJOBS query #
@@ -70,10 +71,10 @@ class SDSSParentSample:
 
         if self._store:
             logger.info('loading local copy')
-            self.df = pd.read_csv(self.local_sdss_sample_copy)
+            self.df = pd.read_csv(self.local_sample_copy)
 
     @property
-    def local_sdss_sample_copy(self):
+    def local_sample_copy(self):
         return os.path.join(self.cache_dir, 'sdss_query_result.csv')
 
     @property

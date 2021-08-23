@@ -8,12 +8,13 @@ from tde_catalogue import main_logger, cache_dir, plots_dir
 from tde_catalogue.data.mir_flares import base_name as mir_base_name
 from tde_catalogue.data.mir_flares.panstarrs_parent_sample import PanstarrsParentSample
 from tde_catalogue.data.mir_flares.sdss_parnet_sample import SDSSParentSample
+from tde_catalogue.data.mir_flares.parent_sample import ParentSample
 
 
 logger = main_logger.getChild(__name__)
 
 
-class CombinedParentSample:
+class CombinedParentSample(ParentSample):
 
     base_name = f"{mir_base_name}/combined_sample"
     default_keymap = {
@@ -39,15 +40,15 @@ class CombinedParentSample:
             if not os.path.isdir(d):
                 os.makedirs(d)
 
-        if (not os.path.isfile(self.local_file)) or (not self._store):
+        if (not os.path.isfile(self.local_sample_copy)) or (not self._store):
             self._combine_samples()
 
         if self._store:
-            logger.debug(f"loading from {self.local_file}")
-            self.df = pd.read_csv(self.local_file)
+            logger.debug(f"loading from {self.local_sample_copy}")
+            self.df = pd.read_csv(self.local_sample_copy)
 
     @property
-    def local_file(self):
+    def local_sample_copy(self):
         return os.path.join(self.cache_dir, "sample.csv")
 
     def _combine_samples(self):
@@ -128,8 +129,8 @@ class CombinedParentSample:
         #######################################################################################
 
         if self._store:
-            logger.debug(f'saving to {self.local_file}')
-            self.df.to_csv(self.local_file)
+            logger.debug(f'saving to {self.local_sample_copy}')
+            self.df.to_csv(self.local_sample_copy)
 
     def plot_cutout(self, *args, **kwargs):
         res = list()

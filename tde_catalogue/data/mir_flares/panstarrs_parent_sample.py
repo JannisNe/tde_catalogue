@@ -6,12 +6,13 @@ import numpy as np
 from tde_catalogue import main_logger, cache_dir, plots_dir
 from tde_catalogue.utils.panstarrs_utils import getgrayim
 from tde_catalogue.data.mir_flares import base_name as mir_base_name
+from tde_catalogue.data.mir_flares.parent_sample import ParentSample
 
 
 logger = main_logger.getChild(__name__)
 
 
-class PanstarrsParentSample:
+class PanstarrsParentSample(ParentSample):
 
     base_name = mir_base_name + '/panstarrs_parent_sample'
     MAST_table_name = 'test_table15_with_psc'
@@ -52,7 +53,7 @@ class PanstarrsParentSample:
         # START make MAST query #
         #########################
 
-        if (not os.path.isfile(self.local_panstarrs_sample_copy)) or (not self._store):
+        if (not os.path.isfile(self.local_sample_copy)) or (not self._store):
             # If there is no local copy, get the table from MAST
             logger.info('No local copy of Panstarrs query result. Getting info from MAST')
 
@@ -69,8 +70,8 @@ class PanstarrsParentSample:
             logger.info(f'got {len(self.df)} objects')
 
             if self._store:
-                logger.debug(f'saving to {self.local_panstarrs_sample_copy}')
-                self.df.to_csv(self.local_panstarrs_sample_copy)
+                logger.debug(f'saving to {self.local_sample_copy}')
+                self.df.to_csv(self.local_sample_copy)
 
         #######################
         # END make MAST query #
@@ -78,7 +79,7 @@ class PanstarrsParentSample:
 
         if self._store:
             logger.info('loading local copy')
-            self.df = pd.read_csv(self.local_panstarrs_sample_copy)
+            self.df = pd.read_csv(self.local_sample_copy)
 
     @property
     def query(self):
@@ -98,7 +99,7 @@ class PanstarrsParentSample:
         return q
 
     @property
-    def local_panstarrs_sample_copy(self):
+    def local_sample_copy(self):
         return os.path.join(self.cache_dir, 'panstarrs_query_result.csv')
 
     def check_if_table_on_mast(self):
