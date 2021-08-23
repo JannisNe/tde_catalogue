@@ -357,10 +357,12 @@ class WISEData:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-l', '--logging_level', type=str, default='INFO')
+    parser.add_argument('--phot', type=bool, default=False, nargs='?', const=True)
     cfg = parser.parse_args()
 
     main_logger.setLevel(cfg.logging_level)
 
     wise_data = WISEData()
     wise_data.match_all_chunks()
-    wise_data.get_photometric_data()
+    if cfg.phot:
+        wise_data.get_photometric_data()
