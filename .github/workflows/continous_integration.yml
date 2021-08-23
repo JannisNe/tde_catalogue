@@ -31,6 +31,18 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - name: install OpenSSL
+        run: |
+          wget https://www.openssl.org/source/openssl-1.1.1k.tar.gz
+          tar -zxf openssl-1.1.1k.tar.gz && cd openssl-1.1.1k
+          ./config
+          make
+          make test
+          sudo make install
+          sudo ln -s /usr/local/bin/openssl /usr/bin/openssl
+          sudo ldconfig
+          openssl version
+          
       - uses: actions/checkout@v2
 
       - name: Get SciServer-Python repo
