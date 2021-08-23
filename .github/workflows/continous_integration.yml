@@ -32,7 +32,9 @@ jobs:
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - name: install OpenSSL
-        run: openssl version
+        run: |
+          openssl version
+          python -c "import ssl; print(ssl.OPENSSL_VERSION)"
 
       - uses: actions/checkout@v2
 
