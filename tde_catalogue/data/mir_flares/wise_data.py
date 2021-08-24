@@ -1,4 +1,4 @@
-import os, subprocess, copy, json, argparse
+import os, subprocess, copy, json, argparse, tqdm, time
 import pandas as pd
 import numpy as np
 import pyvo as vo
@@ -294,11 +294,22 @@ class WISEData:
                 logger.debug(f'Job: {job.url}; {job.phase}')
                 jobs[f"chunk{i}_{t}"] = job
 
+        _wait_for_h = 8
+        logger.info(f"wait for {_wait_for_h} hours to give jobs some time")
+        time.sleep(_wait_for_h * 3600)
+
         lightcurves = list()
         for t, job in jobs.items():
             logger.info(f"Waiting on query of {t}")
             logger.info(" ........")
-            job.wait()
+            # Sometimes a connection Error occurs.
+            # In that case try again as long as job.wait() exits normally
+            while True:
+                try:
+                    job.wait()
+                    break
+                except vo.dal.exceptions.DALServiceError as e:
+                    logger.warning(f"DALServiceError: {e}")
 
             logger.info('Done!')
             lightcurve = job.fetch_result().to_table().to_pandas()
@@ -314,7 +325,8 @@ class WISEData:
 
         logger.info('selecting individual lightcurves and bin ...')
         self.binned_lightcurves = dict()
-        for ID in self._all_lightcurves.wise_id.unique():
+        unique_ids = self._all_lightcurves.wise_id.unique()
+        for ID in tqdm.tqdm(unique_ids, desc='selecting and binning'):
             m = self._all_lightcurves.wise_id == ID
             lightcurve = self._all_lightcurves[m]
             if drop:
