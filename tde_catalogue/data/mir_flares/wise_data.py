@@ -1,4 +1,5 @@
 import os, subprocess, copy, json, argparse, tqdm, time
+import multiprocessing as mp
 import pandas as pd
 import numpy as np
 import pyvo as vo
@@ -75,6 +76,7 @@ class WISEData:
         parent_sample = parent_sample_class()
         self.base_name = base_name
         self.min_sep = min_sep_arcsec * u.arcsec
+        self.n_chunks = n_chunks
 
         # set up parent sample keys
         self.parent_ra_key = parent_sample.default_keymap['ra']
@@ -84,16 +86,20 @@ class WISEData:
 
         # set up directories
         self.cache_dir = os.path.join(cache_dir, base_name)
+        self._cache_photometry_dir = os.path.join(self.cache_dir, "photometry")
         self.output_dir = os.path.join(output_dir, base_name)
         self.lightcurve_dir = os.path.join(self.output_dir, "lightcurves")
         self.plots_dir = os.path.join(plots_dir, base_name)
 
-        for d in [self.cache_dir, self.output_dir, self.lightcurve_dir, self.plots_dir]:
+        for d in [self.cache_dir, self._cache_photometry_dir, self.output_dir, self.lightcurve_dir, self.plots_dir]:
             if not os.path.isdir(d):
                 os.makedirs(d)
 
         # set up result attributes
+        self._split_photometry_key = '__chunk'
+        self._cached_raw_photometry_prefix = 'raw_photometry'
         self._all_lightcurves = None
+        self._cached_all_lightcurves = None
         self.binned_lightcurves = None
         self._cached_binned_lcs_json = os.path.join(self.cache_dir, "binned_lcs.json")
 
@@ -106,21 +112,28 @@ class WISEData:
         #########################
 
         self.parent_sample = parent_sample
-        min_dec = np.floor(min(self.parent_sample.df[self.parent_dec_key]))
-        max_dec = np.ceil(max(self.parent_sample.df[self.parent_dec_key]))
+        min_dec = min(self.parent_sample.df[self.parent_dec_key])
+        max_dec = max(self.parent_sample.df[self.parent_dec_key])
         logger.info(f'Declination: ({min_dec}, {max_dec})')
         self.parent_sample.df[self.parent_wise_source_id_key] = ""
         self.parent_sample.df[self.parent_sample_wise_skysep_key] = np.inf
 
-        sin_bounds = np.linspace(np.sin(np.radians(min_dec)), np.sin(np.radians(max_dec)), n_chunks+1, endpoint=True)
+        sin_bounds = np.linspace(np.sin(np.radians(min_dec * 1.001)), np.sin(np.radians(max_dec)), n_chunks+1, endpoint=True)
         self.dec_intervalls = np.degrees(np.arcsin(np.array([sin_bounds[:-1], sin_bounds[1:]]).T))
         logger.info(f'Declination intervalls are {self.dec_intervalls}')
 
         self.dec_interval_masks = list()
         for i, dec_intervall in enumerate(self.dec_intervalls):
             dec_intervall_mask = (self.parent_sample.df[self.parent_dec_key] > min(dec_intervall)) & \
-                                 (self.parent_sample.df[self.parent_dec_key] < max(dec_intervall))
+                                 (self.parent_sample.df[self.parent_dec_key] <= max(dec_intervall))
+            if not np.any(dec_intervall_mask):
+                logger.warning(f"No objects selected in chunk {i}!")
             self.dec_interval_masks.append(dec_intervall_mask)
+
+        _is_not_selected = sum(self.dec_interval_masks) != 1
+        if np.any(_is_not_selected):
+            raise ValueError(f"{len(self.dec_interval_masks[0][_is_not_selected])} objects not selected!"
+                             f"Index: {np.where(_is_not_selected)[0]}")
 
         #########################
         # END CHUNK MASK        #
@@ -151,6 +164,7 @@ class WISEData:
     def match_all_chunks(self, **table_name):
         for i in range(len(self.dec_intervalls)):
             self.match_single_chunk(i, **table_name)
+        self.parent_sample.save_local()
 
     def match_single_chunk(self, chunk_number,
                            table_name="AllWISE Source Catalog"):
@@ -178,7 +192,7 @@ class WISEData:
         _selected_parent_sample_astrotab.write(_parent_sample_declination_band_file, format='ipac', overwrite=True)
 
         # use Gator to query IRSA
-        _output_file = os.path.join(self.cache_dir, f"wise_data_chunk{chunk_number}.tbl")
+        _output_file = os.path.join(self.cache_dir, f"parent_sample_chunk{chunk_number}.tbl")
         submit_cmd = f'curl ' \
                      f'-o {_output_file} ' \
                      f'-F filename=@{_parent_sample_declination_band_file} ' \
@@ -213,8 +227,6 @@ class WISEData:
             self.parent_wise_source_id_key
         ] = list(gator_res["cntr"])
 
-        self.parent_sample.save_local()
-
     ###################################################
     # END MATCH PARENT SAMPLE TO WISE SOURCES         #
     ###########################################################################################################
@@ -238,7 +250,6 @@ class WISEData:
 
         self._query_for_photometry(tables, perc)
         self._select_individual_lightcurves_and_bin()
-        self._cache_binned_lightcurves()
 
     def _get_photometry_query_string(self, table_name):
         """
@@ -266,6 +277,11 @@ class WISEData:
         logger.debug(f"\n{q}")
         return q
 
+    def _chunk_photometry_cache_filename(self, table_nice_name, chunk_number):
+        table_name = self.get_db_name(table_nice_name)
+        fn = f"{self._cached_raw_photometry_prefix}{table_name}{self._split_photometry_key}{chunk_number}.csv"
+        return os.path.join(self._cache_photometry_dir, fn)
+
     def _query_for_photometry(self, tables, perc):
 
         # only integers can be uploaded
@@ -280,62 +296,88 @@ class WISEData:
             logger.debug(f"selected {len(wise_id)} IDs")
         upload_table = Table({'wise_id': wise_id})
 
-        # ----------------------------------------------------------------------
-        #     Do the query
-        # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    #     Do the query
+    # ----------------------------------------------------------------------
 
         jobs = dict()
         for t in np.atleast_1d(tables):
             qstring = self._get_photometry_query_string(t)
+            jobs[t] = dict()
             for i, m in enumerate(self.dec_interval_masks):
-                job = WISEData.service.submit_job(qstring, uploads={'ids': upload_table[m]})
+                job = WISEData.service.submit_job(qstring, uploads={'ids': upload_table[np.array(m)]})
                 job.run()
                 logger.info(f'submitted job for {t} for chunk {i}: ')
                 logger.debug(f'Job: {job.url}; {job.phase}')
-                jobs[f"chunk{i}_{t}"] = job
+                jobs[t][i] = job
 
         _wait_for_h = 8
         logger.info(f"wait for {_wait_for_h} hours to give jobs some time")
         time.sleep(_wait_for_h * 3600)
 
-        lightcurves = list()
-        for t, job in jobs.items():
-            logger.info(f"Waiting on query of {t}")
-            logger.info(" ........")
-            # Sometimes a connection Error occurs.
-            # In that case try again as long as job.wait() exits normally
-            while True:
-                try:
-                    job.wait()
-                    break
-                except vo.dal.exceptions.DALServiceError as e:
-                    logger.warning(f"DALServiceError: {e}")
+        for t, jobd in jobs.items():
+            for i, job in jobd.items():
+                logger.info(f"Waiting on {i}th query of {t}")
+                logger.info(" ........")
+                # Sometimes a connection Error occurs.
+                # In that case try again as long as job.wait() exits normally
+                while True:
+                    try:
+                        job.wait()
+                        break
+                    except vo.dal.exceptions.DALServiceError as e:
+                        logger.warning(f"DALServiceError: {e}")
 
-            logger.info('Done!')
-            lightcurve = job.fetch_result().to_table().to_pandas()
-            lightcurves.append(lightcurve.rename(columns=self.photometry_table_keymap[t]))
+                logger.info('Done!')
+                lightcurve = job.fetch_result().to_table().to_pandas()
+                fn = self._chunk_photometry_cache_filename(t, i)
+                logger.debug(f"saving under {fn}")
+                lightcurve.rename(columns=self.photometry_table_keymap[t]).to_csv(fn)
 
-        self._all_lightcurves = pd.concat(lightcurves)
+    # ----------------------------------------------------------------------
+    #     select individual lightcurves and bin
+    # ----------------------------------------------------------------------
 
-    def _select_individual_lightcurves_and_bin(self, drop=True):
-
-        # ----------------------------------------------------------------------
-        #     select individual lightcurves
-        # ----------------------------------------------------------------------
-
+    def _select_individual_lightcurves_and_bin(self, ncpu=15):
         logger.info('selecting individual lightcurves and bin ...')
-        self.binned_lightcurves = dict()
-        unique_ids = self._all_lightcurves.wise_id.unique()
-        for ID in tqdm.tqdm(unique_ids, desc='selecting and binning'):
+        ncpu = min(self.n_chunks, ncpu)
+        logger.debug(f"using {ncpu} CPUs")
+        args = list(range(self.n_chunks))
+        with mp.Pool(ncpu) as p:
+            tqdm.tqdm(p.imap(self._subprocess_select_and_bin, args), total=self.n_chunks, desc='select and bin')
+
+    def _cache_chunk_binned_lightcurves_filename(self, chunk_number):
+        fn = f"binned_lightcurves{self._split_photometry_key}{chunk_number}.json"
+        return os.path.join(self._cache_photometry_dir, fn)
+
+    def _save_chunk_binned_lcs(self, chunk_number, binned_lcs):
+        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number)
+        with open(fn, "w") as f:
+            json.dump(binned_lcs, f)
+
+    def _load_chunk_binned_lcs(self, chunk_number):
+        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number)
+        with open(fn, "r") as f:
+            binned_lcs = json.load(f)
+        return binned_lcs
+
+    def _subprocess_select_and_bin(self, chunk_number):
+
+        # load only the files for this chunk
+        fns = [fn for fn in os.listdir(self._cache_photometry_dir)
+               if (fn.startswith(self._cached_raw_photometry_prefix) and fn.endswith(str(chunk_number)))]
+        lightcurves = pd.concat([pd.read_csv(fn) for fn in fns])
+
+        # run through the ids and bin the lightcurves
+        unique_id = lightcurves.wise_id.unique()
+        binned_lcs = dict()
+        for ID in unique_id:
             m = self._all_lightcurves.wise_id == ID
             lightcurve = self._all_lightcurves[m]
-            if drop:
-                # drop the selected rows from self._all_lightcurves to save memory
-                self._all_lightcurves.drop(self._all_lightcurves.index[m], inplace=True)
 
-        # ----------------------------------------------------------------------
-        #     bin lightcurves
-        # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    #     bin lightcurves
+    # ----------------------------------------------------------------------
 
             # bin lightcurves in time intervals where observations are closer than 100 days together
             sorted_mjds = np.sort(lightcurve.mjd)
@@ -362,15 +404,9 @@ class WISEData:
 
                 binned_lc = binned_lc.append(r, ignore_index=True)
 
-            self.binned_lightcurves[int(ID)] = binned_lc.to_dict()
+            binned_lcs[ID] = binned_lc.to_dict()
 
-    def _cache_binned_lightcurves(self):
-        # ----------------------------------------------------------------------
-        #     save to JSON
-        # ----------------------------------------------------------------------
-        logger.debug(f"saving to {self._cached_binned_lcs_json}")
-        with open(self._cached_binned_lcs_json, "w") as f:
-            json.dump(self.binned_lightcurves, f)
+        self._save_chunk_binned_lcs(chunk_number, binned_lcs)
 
     #################################
     # END GET PHOTOMETRY DATA       #
