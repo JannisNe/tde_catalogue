@@ -56,8 +56,8 @@ class PanstarrsParentSampleTestVersion(PanstarrsParentSample):
     def clean_up(self):
         logger.info(f'removing {cache_dir}')
         shutil.rmtree(self.cache_dir)
-        logger.info(f'dropping {self.MAST_table_name} from MAST')
-        self.mastcasjob.drop_table(self.MAST_table_name)
+        # logger.info(f'dropping {self.MAST_table_name} from MAST')
+        # self.mastcasjob.drop_table(self.MAST_table_name)
 
 
 class SDSSParentSampleTestVersion(SDSSParentSample):
