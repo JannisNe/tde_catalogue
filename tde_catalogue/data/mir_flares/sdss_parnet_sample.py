@@ -24,13 +24,9 @@ class SDSSParentSample(ParentSample):
                  base_name=base_name,
                  store=True):
 
-        try:
-            uid, pw = get_sdss_credentials()
-            logger.debug(f"logging in with {uid}")
-            Authentication.login(uid, pw)
-        except requests.exceptions.SSLError:
-            token = get_skyserver_token()
-            Authentication.setToken(token)
+        uid, pw = get_sdss_credentials()
+        logger.debug(f"logging in with {uid}")
+        Authentication.login(uid, pw)
 
         self.base_name = base_name
         self._store = store
