@@ -1,4 +1,4 @@
-import os, subprocess, copy, json, argparse, tqdm, time
+import os, subprocess, copy, json, argparse, tqdm, time, threading
 import multiprocessing as mp
 import pandas as pd
 import numpy as np
@@ -98,6 +98,7 @@ class WISEData:
         # set up result attributes
         self._split_photometry_key = '__chunk'
         self._cached_raw_photometry_prefix = 'raw_photometry'
+        self.jobs = None
         self._all_lightcurves = None
         self._cached_all_lightcurves = None
         self.binned_lightcurves = None
@@ -244,8 +245,8 @@ class WISEData:
 
         if tables is None:
             tables = [
-                'NEOWISE-R Single Exposure (L1b) Source Table',
-                'AllWISE Multiepoch Photometry Table'
+                'AllWISE Multiepoch Photometry Table',
+                'NEOWISE-R Single Exposure (L1b) Source Table'
             ]
 
         self._query_for_photometry(tables, perc)
@@ -279,8 +280,29 @@ class WISEData:
 
     def _chunk_photometry_cache_filename(self, table_nice_name, chunk_number):
         table_name = self.get_db_name(table_nice_name)
-        fn = f"{self._cached_raw_photometry_prefix}{table_name}{self._split_photometry_key}{chunk_number}.csv"
+        fn = f"{self._cached_raw_photometry_prefix}_{table_name}{self._split_photometry_key}{chunk_number}.csv"
         return os.path.join(self._cache_photometry_dir, fn)
+
+    def _thread_wait_and_get_results(self, t, i):
+        logger.info(f"Waiting on {i}th query of {t} ........")
+        _job = self.jobs[t][i]
+        # Sometimes a connection Error occurs.
+        # In that case try again as long as job.wait() exits normally
+        while True:
+            try:
+                _job.wait()
+                break
+            except vo.dal.exceptions.DALServiceError as e:
+                if '404 Client Error: Not Found for url' in str(e):
+                    raise vo.dal.exceptions.DALServiceError(f'{i}th query of {t}: {e}')
+                else:
+                    logger.warning(f"{i}th query of {t}: DALServiceError: {e}")
+
+        logger.info('{i}th query of {t}: Done!')
+        lightcurve = _job.fetch_result().to_table().to_pandas()
+        fn = self._chunk_photometry_cache_filename(t, i)
+        logger.debug(f"{i}th query of {t}: saving under {fn}")
+        lightcurve.rename(columns=self.photometry_table_keymap[t]).to_csv(fn)
 
     def _query_for_photometry(self, tables, perc):
 
@@ -300,39 +322,96 @@ class WISEData:
     #     Do the query
     # ----------------------------------------------------------------------
 
-        jobs = dict()
+        self.jobs = dict()
+        job_keys = list()
         for t in np.atleast_1d(tables):
             qstring = self._get_photometry_query_string(t)
-            jobs[t] = dict()
+            self.jobs[t] = dict()
             for i, m in enumerate(self.dec_interval_masks):
                 job = WISEData.service.submit_job(qstring, uploads={'ids': upload_table[np.array(m)]})
                 job.run()
                 logger.info(f'submitted job for {t} for chunk {i}: ')
                 logger.debug(f'Job: {job.url}; {job.phase}')
-                jobs[t][i] = job
+                self.jobs[t][i] = job
+                job_keys.append((t, i))
 
-        _wait_for_h = 8
+        _wait_for_h = 5
         logger.info(f"wait for {_wait_for_h} hours to give jobs some time")
         time.sleep(_wait_for_h * 3600)
 
-        for t, jobd in jobs.items():
-            for i, job in jobd.items():
-                logger.info(f"Waiting on {i}th query of {t}")
-                logger.info(" ........")
-                # Sometimes a connection Error occurs.
-                # In that case try again as long as job.wait() exits normally
-                while True:
-                    try:
-                        job.wait()
-                        break
-                    except vo.dal.exceptions.DALServiceError as e:
-                        logger.warning(f"DALServiceError: {e}")
+        threads = list()
+        for t, i in job_keys:
+            _thread = threading.Thread(target=self._thread_wait_and_get_results, args=(t, i))
+            _thread.start()
+            threads.append(_thread)
 
-                logger.info('Done!')
-                lightcurve = job.fetch_result().to_table().to_pandas()
-                fn = self._chunk_photometry_cache_filename(t, i)
-                logger.debug(f"saving under {fn}")
-                lightcurve.rename(columns=self.photometry_table_keymap[t]).to_csv(fn)
+        for t in threads:
+            t.join()
+
+        logger.info('all jobs done!')
+
+        # # loop through the jobs every thirty minutes and collect the results of the ones that are done
+        # _done_phases = {"COMPLETED", "ABORTED", "ERROR"}
+        # _active_phases = {"QUEUED", "EXECUTING", "RUN"}
+        # done_jobs = list()
+        # logger.info('Waiting on jobs ...........')
+        # j = 0
+        # while len(done_jobs) < len(job_keys):
+        #     for t, i in job_keys:
+        #         _job = self.jobs[t][i]
+        #         _phase = _job.phase
+        #         if _phase in _done_phases:
+        #
+        #             try:
+        #                 logger.info('Done!')
+        #                 lightcurve = _job.fetch_result().to_table().to_pandas()
+        #                 fn = self._chunk_photometry_cache_filename(t, i)
+        #                 logger.debug(f"saving under {fn}")
+        #                 lightcurve.rename(columns=self.photometry_table_keymap[t]).to_csv(fn)
+        #             except vo.DALQueryError as e:
+        #                 logger.warning(f'Job {t} {i}: {e}')
+        #
+        #             logger.info(f'Job {t} {i} done')
+        #             done_jobs.append((t, i))
+        #
+        #     logger.info(f'{len(done_jobs)} of {len(job_keys)} jobs done')
+        #     time.sleep(3600 * 0.5)
+        #
+        #     # every sixth time print job infos
+        #     j += 1
+        #     if j == 6:
+        #         logger.info('\ttable\t\t\tchunk\tphase\n'
+        #                     '\t----------------------------------------------------------------------------')
+        #         for t, i in job_keys:
+        #             if (t, i) in done_jobs:
+        #                 continue
+        #             _job = self.jobs[t][i]
+        #             logger.info(f'\t{t}\t{i}\t{_job.phase}')
+        #
+        # logger.info('all jobs done')
+
+
+        # for t, jobd in jobs.items():
+        #     for i, job in jobd.items():
+        #         logger.info(f"Waiting on {i}th query of {t}")
+        #         logger.info(" ........")
+        #         # Sometimes a connection Error occurs.
+        #         # In that case try again as long as job.wait() exits normally
+        #         while True:
+        #             try:
+        #                 job.wait()
+        #                 break
+        #             except vo.dal.exceptions.DALServiceError as e:
+        #                 if '404 Client Error: Not Found for url' in str(e):
+        #                     raise vo.dal.exceptions.DALServiceError(str(e))
+        #                 else:
+        #                     logger.warning(f"DALServiceError: {e}")
+        #
+        #         logger.info('Done!')
+        #         lightcurve = job.fetch_result().to_table().to_pandas()
+        #         fn = self._chunk_photometry_cache_filename(t, i)
+        #         logger.debug(f"saving under {fn}")
+        #         lightcurve.rename(columns=self.photometry_table_keymap[t]).to_csv(fn)
 
     # ----------------------------------------------------------------------
     #     select individual lightcurves and bin
