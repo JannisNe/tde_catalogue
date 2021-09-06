@@ -109,7 +109,7 @@ class WISEDataTestVersion(WISEData):
     base_name = 'test/' + WISEData.base_name
 
     def __init__(self):
-        super().__init__(n_chunks=1,
+        super().__init__(n_chunks=10,
                          base_name=WISEDataTestVersion.base_name,
                          parent_sample_class=CombinedSampleTestVersion)
 
