@@ -41,7 +41,7 @@ jobs:
       - name: Get SciServer-Python repo
         uses: actions/checkout@v2
         with:
-          repository: sciserver/SciScript-Python
+          repository: JannisNe/SciScript-Python
           path: SciScript-Python
 
       # Set up the python versions
