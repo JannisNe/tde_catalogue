@@ -22,9 +22,11 @@ class CombinedParentSample(ParentSample):
         'dec': 'dec'
     }
 
-    def __init__(self, parent_sample_classes, min_sep=20,
+    def __init__(self, parent_sample_classes=None, min_sep=20,
                  base_name=base_name, store=True):
 
+        if parent_sample_classes is None:
+            parent_sample_classes = [SDSSParentSample, PanstarrsParentSample]
         assert len(parent_sample_classes) == 2
 
         self.parent_sample_classes = parent_sample_classes
@@ -175,4 +177,4 @@ if __name__ == '__main__':
 
     main_logger.setLevel(cfg.logging_level)
 
-    CombinedParentSample([SDSSParentSample, PanstarrsParentSample])
+    CombinedParentSample()
