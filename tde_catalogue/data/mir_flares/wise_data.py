@@ -8,7 +8,7 @@ from astropy.table import Table
 
 from tde_catalogue import main_logger, cache_dir, plots_dir, output_dir
 from tde_catalogue.data.mir_flares import base_name as mir_base_name
-from tde_catalogue.data.mir_flares.panstarrs_parent_sample import PanstarrsParentSample
+from tde_catalogue.data.mir_flares.combined_parent_sample import CombinedParentSample
 
 logger = main_logger.getChild(__name__)
 
@@ -60,7 +60,7 @@ class WISEData:
                  min_sep_arcsec=60,
                  n_chunks=8,
                  base_name=base_name,
-                 parent_sample_class=PanstarrsParentSample):
+                 parent_sample_class=CombinedParentSample):
         """
         Initialise a class instance
         :param min_sep_arcsec: float, minimum separation required to the parent sample sources
@@ -444,7 +444,9 @@ class WISEData:
 
         # load only the files for this chunk
         fns = [fn for fn in os.listdir(self._cache_photometry_dir)
-               if (fn.startswith(self._cached_raw_photometry_prefix) and fn.endswith(str(chunk_number)))]
+               if (fn.startswith(self._cached_raw_photometry_prefix) and fn.endswith(
+                f"{self._split_photometry_key}{chunk_number}.csv"
+            ))]
         lightcurves = pd.concat([pd.read_csv(fn) for fn in fns])
 
         # run through the ids and bin the lightcurves
