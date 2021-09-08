@@ -5,6 +5,7 @@ import numpy as np
 import pyvo as vo
 import astropy.units as u
 from astropy.table import Table
+import matplotlib.pyplot as plt
 
 from tde_catalogue import main_logger, cache_dir, plots_dir, output_dir
 from tde_catalogue.data.mir_flares import base_name as mir_base_name
@@ -73,14 +74,14 @@ class WISEData:
         # START SET-UP          #
         #########################
 
-        parent_sample = parent_sample_class()
+        parent_sample = parent_sample_class() if parent_sample_class else None
         self.base_name = base_name
         self.min_sep = min_sep_arcsec * u.arcsec
         self.n_chunks = n_chunks
 
         # set up parent sample keys
-        self.parent_ra_key = parent_sample.default_keymap['ra']
-        self.parent_dec_key = parent_sample.default_keymap['dec']
+        self.parent_ra_key = parent_sample.default_keymap['ra'] if parent_sample else None
+        self.parent_dec_key = parent_sample.default_keymap['dec'] if parent_sample else None
         self.parent_wise_source_id_key = 'WISE_id'
         self.parent_sample_wise_skysep_key = 'sep_to_WISE_source'
 
@@ -99,10 +100,7 @@ class WISEData:
         self._split_photometry_key = '__chunk'
         self._cached_raw_photometry_prefix = 'raw_photometry'
         self.jobs = None
-        self._all_lightcurves = None
-        self._cached_all_lightcurves = None
-        self.binned_lightcurves = None
-        self._cached_binned_lcs_json = os.path.join(self.cache_dir, "binned_lcs.json")
+        self.binned_lightcurves_filename = os.path.join(self.lightcurve_dir, "binned_lightcurves.json")
 
         #########################
         # END SET-UP            #
@@ -113,28 +111,33 @@ class WISEData:
         #########################
 
         self.parent_sample = parent_sample
-        min_dec = min(self.parent_sample.df[self.parent_dec_key])
-        max_dec = max(self.parent_sample.df[self.parent_dec_key])
-        logger.info(f'Declination: ({min_dec}, {max_dec})')
-        self.parent_sample.df[self.parent_wise_source_id_key] = ""
-        self.parent_sample.df[self.parent_sample_wise_skysep_key] = np.inf
+        if self.parent_sample:
 
-        sin_bounds = np.linspace(np.sin(np.radians(min_dec * 1.001)), np.sin(np.radians(max_dec)), n_chunks+1, endpoint=True)
-        self.dec_intervalls = np.degrees(np.arcsin(np.array([sin_bounds[:-1], sin_bounds[1:]]).T))
-        logger.info(f'Declination intervalls are {self.dec_intervalls}')
+            min_dec = min(self.parent_sample.df[self.parent_dec_key])
+            max_dec = max(self.parent_sample.df[self.parent_dec_key])
+            logger.info(f'Declination: ({min_dec}, {max_dec})')
+            self.parent_sample.df[self.parent_wise_source_id_key] = ""
+            self.parent_sample.df[self.parent_sample_wise_skysep_key] = np.inf
 
-        self.dec_interval_masks = list()
-        for i, dec_intervall in enumerate(self.dec_intervalls):
-            dec_intervall_mask = (self.parent_sample.df[self.parent_dec_key] > min(dec_intervall)) & \
-                                 (self.parent_sample.df[self.parent_dec_key] <= max(dec_intervall))
-            if not np.any(dec_intervall_mask):
-                logger.warning(f"No objects selected in chunk {i}!")
-            self.dec_interval_masks.append(dec_intervall_mask)
+            sin_bounds = np.linspace(np.sin(np.radians(min_dec * 1.001)), np.sin(np.radians(max_dec)), n_chunks+1, endpoint=True)
+            self.dec_intervalls = np.degrees(np.arcsin(np.array([sin_bounds[:-1], sin_bounds[1:]]).T))
+            logger.info(f'Declination intervalls are {self.dec_intervalls}')
 
-        _is_not_selected = sum(self.dec_interval_masks) != 1
-        if np.any(_is_not_selected):
-            raise ValueError(f"{len(self.dec_interval_masks[0][_is_not_selected])} objects not selected!"
-                             f"Index: {np.where(_is_not_selected)[0]}")
+            self.dec_interval_masks = list()
+            for i, dec_intervall in enumerate(self.dec_intervalls):
+                dec_intervall_mask = (self.parent_sample.df[self.parent_dec_key] > min(dec_intervall)) & \
+                                     (self.parent_sample.df[self.parent_dec_key] <= max(dec_intervall))
+                if not np.any(dec_intervall_mask):
+                    logger.warning(f"No objects selected in chunk {i}!")
+                self.dec_interval_masks.append(dec_intervall_mask)
+
+            _is_not_selected = sum(self.dec_interval_masks) != 1
+            if np.any(_is_not_selected):
+                raise ValueError(f"{len(self.dec_interval_masks[0][_is_not_selected])} objects not selected!"
+                                 f"Index: {np.where(_is_not_selected)[0]}")
+
+        else:
+            logger.warning("No parent sample given!")
 
         #########################
         # END CHUNK MASK        #
@@ -251,6 +254,7 @@ class WISEData:
 
         self._query_for_photometry(tables, perc)
         self._select_individual_lightcurves_and_bin()
+        self._combine_binned_lcs()
 
     def _get_photometry_query_string(self, table_name):
         """
@@ -303,20 +307,13 @@ class WISEData:
         fn = self._chunk_photometry_cache_filename(t, i)
         logger.debug(f"{i}th query of {t}: saving under {fn}")
         lightcurve.rename(columns=self.photometry_table_keymap[t]).to_csv(fn)
+        return
 
     def _query_for_photometry(self, tables, perc):
 
         # only integers can be uploaded
         wise_id = np.array([int(idd) for idd in self.parent_sample.df[self.parent_wise_source_id_key]])
         logger.debug(f"{len(wise_id)} IDs in total")
-
-        # if perc is smaller than one select only a subset of wise IDs
-        if perc < 1:
-            logger.debug(f"Getting {perc:.2f} % of IDs")
-            N_ids = int(round(len(wise_id) * perc))
-            wise_id = np.random.default_rng().choice(wise_id, N_ids, replace=False, shuffle=False)
-            logger.debug(f"selected {len(wise_id)} IDs")
-        upload_table = Table({'wise_id': wise_id})
 
     # ----------------------------------------------------------------------
     #     Do the query
@@ -328,7 +325,18 @@ class WISEData:
             qstring = self._get_photometry_query_string(t)
             self.jobs[t] = dict()
             for i, m in enumerate(self.dec_interval_masks):
-                job = WISEData.service.submit_job(qstring, uploads={'ids': upload_table[np.array(m)]})
+
+                # if perc is smaller than one select only a subset of wise IDs
+                wise_id_sel = wise_id[np.array(m)]
+                if perc < 1:
+                    logger.debug(f"Getting {perc:.2f} % of IDs")
+                    N_ids = int(round(len(wise_id_sel) * perc))
+                    wise_id_sel = np.random.default_rng().choice(wise_id_sel, N_ids, replace=False, shuffle=False)
+                    logger.debug(f"selected {len(wise_id_sel)} IDs")
+
+                upload_table = Table({'wise_id': wise_id_sel})
+
+                job = WISEData.service.submit_job(qstring, uploads={'ids': upload_table})
                 job.run()
                 logger.info(f'submitted job for {t} for chunk {i}: ')
                 logger.debug(f'Job: {job.url}; {job.phase}')
@@ -350,80 +358,23 @@ class WISEData:
 
         logger.info('all jobs done!')
 
-        # # loop through the jobs every thirty minutes and collect the results of the ones that are done
-        # _done_phases = {"COMPLETED", "ABORTED", "ERROR"}
-        # _active_phases = {"QUEUED", "EXECUTING", "RUN"}
-        # done_jobs = list()
-        # logger.info('Waiting on jobs ...........')
-        # j = 0
-        # while len(done_jobs) < len(job_keys):
-        #     for t, i in job_keys:
-        #         _job = self.jobs[t][i]
-        #         _phase = _job.phase
-        #         if _phase in _done_phases:
-        #
-        #             try:
-        #                 logger.info('Done!')
-        #                 lightcurve = _job.fetch_result().to_table().to_pandas()
-        #                 fn = self._chunk_photometry_cache_filename(t, i)
-        #                 logger.debug(f"saving under {fn}")
-        #                 lightcurve.rename(columns=self.photometry_table_keymap[t]).to_csv(fn)
-        #             except vo.DALQueryError as e:
-        #                 logger.warning(f'Job {t} {i}: {e}')
-        #
-        #             logger.info(f'Job {t} {i} done')
-        #             done_jobs.append((t, i))
-        #
-        #     logger.info(f'{len(done_jobs)} of {len(job_keys)} jobs done')
-        #     time.sleep(3600 * 0.5)
-        #
-        #     # every sixth time print job infos
-        #     j += 1
-        #     if j == 6:
-        #         logger.info('\ttable\t\t\tchunk\tphase\n'
-        #                     '\t----------------------------------------------------------------------------')
-        #         for t, i in job_keys:
-        #             if (t, i) in done_jobs:
-        #                 continue
-        #             _job = self.jobs[t][i]
-        #             logger.info(f'\t{t}\t{i}\t{_job.phase}')
-        #
-        # logger.info('all jobs done')
-
-
-        # for t, jobd in jobs.items():
-        #     for i, job in jobd.items():
-        #         logger.info(f"Waiting on {i}th query of {t}")
-        #         logger.info(" ........")
-        #         # Sometimes a connection Error occurs.
-        #         # In that case try again as long as job.wait() exits normally
-        #         while True:
-        #             try:
-        #                 job.wait()
-        #                 break
-        #             except vo.dal.exceptions.DALServiceError as e:
-        #                 if '404 Client Error: Not Found for url' in str(e):
-        #                     raise vo.dal.exceptions.DALServiceError(str(e))
-        #                 else:
-        #                     logger.warning(f"DALServiceError: {e}")
-        #
-        #         logger.info('Done!')
-        #         lightcurve = job.fetch_result().to_table().to_pandas()
-        #         fn = self._chunk_photometry_cache_filename(t, i)
-        #         logger.debug(f"saving under {fn}")
-        #         lightcurve.rename(columns=self.photometry_table_keymap[t]).to_csv(fn)
-
     # ----------------------------------------------------------------------
     #     select individual lightcurves and bin
     # ----------------------------------------------------------------------
 
-    def _select_individual_lightcurves_and_bin(self, ncpu=15):
+    def _select_individual_lightcurves_and_bin(self, ncpu=35):
         logger.info('selecting individual lightcurves and bin ...')
         ncpu = min(self.n_chunks, ncpu)
         logger.debug(f"using {ncpu} CPUs")
         args = list(range(self.n_chunks))
+        logger.debug(f"multiprocessing arguments: {args}")
         with mp.Pool(ncpu) as p:
-            tqdm.tqdm(p.imap(self._subprocess_select_and_bin, args), total=self.n_chunks, desc='select and bin')
+            r = list(tqdm.tqdm(
+                p.imap(self._subprocess_select_and_bin, args), total=self.n_chunks, desc='select and bin'
+            ))
+            # p.map(self._subprocess_select_and_bin, args)
+            p.close()
+            p.join()
 
     def _cache_chunk_binned_lightcurves_filename(self, chunk_number):
         fn = f"binned_lightcurves{self._split_photometry_key}{chunk_number}.json"
@@ -443,18 +394,21 @@ class WISEData:
     def _subprocess_select_and_bin(self, chunk_number):
 
         # load only the files for this chunk
-        fns = [fn for fn in os.listdir(self._cache_photometry_dir)
+        fns = [os.path.join(self._cache_photometry_dir, fn)
+               for fn in os.listdir(self._cache_photometry_dir)
                if (fn.startswith(self._cached_raw_photometry_prefix) and fn.endswith(
                 f"{self._split_photometry_key}{chunk_number}.csv"
             ))]
+        logger.debug(f"chunk {chunk_number}: loading {len(fns)} files for chunk {chunk_number}")
         lightcurves = pd.concat([pd.read_csv(fn) for fn in fns])
 
         # run through the ids and bin the lightcurves
         unique_id = lightcurves.wise_id.unique()
+        logger.debug(f"chunk {chunk_number}: going through {len(unique_id)} IDs")
         binned_lcs = dict()
         for ID in unique_id:
-            m = self._all_lightcurves.wise_id == ID
-            lightcurve = self._all_lightcurves[m]
+            m = lightcurves.wise_id == ID
+            lightcurve = lightcurves[m]
 
     # ----------------------------------------------------------------------
     #     bin lightcurves
@@ -487,10 +441,69 @@ class WISEData:
 
             binned_lcs[ID] = binned_lc.to_dict()
 
+        logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
         self._save_chunk_binned_lcs(chunk_number, binned_lcs)
+
+    def load_binned_lcs(self):
+        with open(self.binned_lightcurves_filename, "r") as f:
+            return json.load(f)
+
+    def _combine_binned_lcs(self):
+        dicts = [self._load_chunk_binned_lcs(c) for c in range(self.n_chunks)]
+        d = dicts[0]
+        for dd in dicts[1:]:
+            d.update(dd)
+
+        fn = self.binned_lightcurves_filename
+        logger.info(f"saving final lightcurves under {fn}")
+        with open(fn, "w") as f:
+            json.dump(d, f)
 
     #################################
     # END GET PHOTOMETRY DATA       #
+    ###########################################################################################################
+
+    ###########################################################################################################
+    # START MAKE PLOTTING FUNCTIONS     #
+    #####################################
+
+    def plot_lc(self, wise_id=None, interactive=False, fn=None, ax=None, save=True):
+
+        logger.debug(f"loading binned lightcurves")
+        lcs = self.load_binned_lcs()
+
+        if wise_id:
+            lc = pd.DataFrame.from_dict(lcs[wise_id])
+        else:
+            raise NotImplementedError
+
+        if not ax:
+            fig, ax = plt.subplots()
+        else:
+            fig = plt.gcf()
+
+        for b in self.bands:
+            ax.errorbar(lc.mean_mjd, lc[f"{b}_mean_flux"], yerr=lc[f"{b}_flux_rms"],
+                        label=b, ls='', marker='s', c=self.band_plot_colors[b], markersize=4,
+                        markeredgecolor='k', ecolor='k', capsize=2)
+
+        ax.set_xlabel('MJD')
+        ax.set_ylabel('flux')
+        ax.legend()
+
+        if save:
+            if not fn:
+                fn = os.path.join(self.plots_dir, f"{wise_id}.pdf")
+            logger.debug(f"saving under {fn}")
+            fig.savefig(fn)
+
+        if interactive:
+            return fig, ax
+        else:
+            plt.close()
+
+    #####################################
+    # START MAKE PLOTTING FUNCTIONS     #
     ###########################################################################################################
 
 
