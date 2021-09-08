@@ -108,9 +108,9 @@ class WISEDataTestVersion(WISEData):
     """
     base_name = 'test/' + WISEData.base_name
 
-    def __init__(self):
+    def __init__(self, name_ext=''):
         super().__init__(n_chunks=10,
-                         base_name=WISEDataTestVersion.base_name,
+                         base_name=WISEDataTestVersion.base_name + name_ext,
                          parent_sample_class=CombinedSampleTestVersion)
 
     def clean_up(self):
@@ -179,14 +179,17 @@ if __name__ == '__main__':
     main_logger.setLevel(cfg.logging_level)
 
     start_time = time.time()
-    wise_data = WISEDataTestVersion()
+    name_ext = '' if cfg.percent == 1 else f"{cfg.percent*100:.0f}percent_of_sources"
+    wise_data = WISEDataTestVersion(name_ext=name_ext)
     init_time = time.time()
     wise_data.match_all_chunks()
     match_time = time.time()
     wise_data.get_photometric_data(perc=cfg.percent)
+    # wise_data._select_individual_lightcurves_and_bin()
+    # wise_data._combine_binned_lcs()
     phot_time = time.time()
 
-    txt = f"{cfg.percent} of {len(wise_data.parent_sample.df)} sources:\n" \
+    txt = f"{cfg.percent*100}% of {len(wise_data.parent_sample.df)} sources:\n" \
           f"Total Time: {phot_time - start_time} \n" \
           f"\tInitialising:\t{init_time - start_time} \n" \
           f"\tMatching:\t{match_time - init_time} \n" \
