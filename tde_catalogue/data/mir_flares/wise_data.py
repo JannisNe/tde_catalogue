@@ -49,7 +49,7 @@ class WISEData:
         "cc_flags like '00%'",
         "qi_fact >= 1",
         "saa_sep >= 5",
-        "moon_masked = '00'"
+        "moon_masked like '00%'"
     ]
 
     bands = ['W1', 'W2']
@@ -119,7 +119,7 @@ class WISEData:
             self.parent_sample.df[self.parent_wise_source_id_key] = ""
             self.parent_sample.df[self.parent_sample_wise_skysep_key] = np.inf
 
-            sin_bounds = np.linspace(np.sin(np.radians(min_dec * 1.001)), np.sin(np.radians(max_dec)), n_chunks+1, endpoint=True)
+            sin_bounds = np.linspace(np.sin(np.radians(min_dec * 0.9999)), np.sin(np.radians(max_dec)), n_chunks+1, endpoint=True)
             self.dec_intervalls = np.degrees(np.arcsin(np.array([sin_bounds[:-1], sin_bounds[1:]]).T))
             logger.info(f'Declination intervalls are {self.dec_intervalls}')
 
@@ -239,7 +239,7 @@ class WISEData:
     # START GET PHOTOMETRY DATA       #
     ###################################
 
-    def get_photometric_data(self, tables=None, perc=1):
+    def get_photometric_data(self, tables=None, perc=1, wait=5):
         """
         Load photometric data from the IRSA server for the matched sample
         :param tables: list like, WISE tables to use for photometry query, defaults to AllWISE and NOEWISER photometry
@@ -252,7 +252,7 @@ class WISEData:
                 'NEOWISE-R Single Exposure (L1b) Source Table'
             ]
 
-        self._query_for_photometry(tables, perc)
+        self._query_for_photometry(tables, perc, wait)
         self._select_individual_lightcurves_and_bin()
         self._combine_binned_lcs()
 
@@ -302,14 +302,14 @@ class WISEData:
                 else:
                     logger.warning(f"{i}th query of {t}: DALServiceError: {e}")
 
-        logger.info('{i}th query of {t}: Done!')
+        logger.info(f'{i}th query of {t}: Done!')
         lightcurve = _job.fetch_result().to_table().to_pandas()
         fn = self._chunk_photometry_cache_filename(t, i)
         logger.debug(f"{i}th query of {t}: saving under {fn}")
         lightcurve.rename(columns=self.photometry_table_keymap[t]).to_csv(fn)
         return
 
-    def _query_for_photometry(self, tables, perc):
+    def _query_for_photometry(self, tables, perc, wait):
 
         # only integers can be uploaded
         wise_id = np.array([int(idd) for idd in self.parent_sample.df[self.parent_wise_source_id_key]])
@@ -343,9 +343,8 @@ class WISEData:
                 self.jobs[t][i] = job
                 job_keys.append((t, i))
 
-        _wait_for_h = 5
-        logger.info(f"wait for {_wait_for_h} hours to give jobs some time")
-        time.sleep(_wait_for_h * 3600)
+        logger.info(f"wait for {wait} hours to give jobs some time")
+        time.sleep(wait * 3600)
 
         threads = list()
         for t, i in job_keys:
@@ -439,7 +438,7 @@ class WISEData:
 
                 binned_lc = binned_lc.append(r, ignore_index=True)
 
-            binned_lcs[ID] = binned_lc.to_dict()
+            binned_lcs[int(ID)] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
         self._save_chunk_binned_lcs(chunk_number, binned_lcs)
