@@ -117,6 +117,9 @@ class WISEDataTestVersion(WISEData):
         if tables is None:
             tables = ['AllWISE Multiepoch Photometry Table']
         super(WISEDataTestVersion, self).get_photometric_data(tables, perc, wait)
+        
+    def _select_individual_lightcurves_and_bin(self, ncpu=1):
+        super(WISEDataTestVersion, self)._select_individual_lightcurves_and_bin(ncpu)
 
     def clean_up(self):
         logger.info(f"removing {self.cache_dir}")
@@ -197,9 +200,9 @@ if __name__ == '__main__':
     init_time = time.time()
     wise_data.match_all_chunks()
     match_time = time.time()
-    wise_data.get_photometric_data(perc=cfg.percent)
-    # wise_data._select_individual_lightcurves_and_bin()
-    # wise_data._combine_binned_lcs()
+    # wise_data.get_photometric_data(perc=cfg.percent)
+    wise_data._select_individual_lightcurves_and_bin()
+    wise_data._combine_binned_lcs()
     phot_time = time.time()
 
     txt = f"{cfg.percent*100}% of {len(wise_data.parent_sample.df)} sources:\n" \
