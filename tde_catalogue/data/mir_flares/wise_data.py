@@ -144,6 +144,17 @@ class WISEData:
         else:
             logger.warning("No parent sample given!")
 
+    def _get_chunk_number(self, wise_id):
+        _ind = np.where(self.parent_sample.df[self.parent_wise_source_id_key] == int(wise_id))[0]
+        logger.debug(f"wise ID {wise_id} at index {_ind}")
+        _in_masks = [m[_ind] for m in self.dec_interval_masks]
+        _chunk_number = np.where(_in_masks)[0]
+        if len(_chunk_number) > 1:
+            raise Exception
+        _chunk_number = _chunk_number[0]
+        logger.debug(f"chunk number is {_chunk_number} for {wise_id}")
+        return _chunk_number
+
         #########################
         # END CHUNK MASK        #
         #######################################################################################
@@ -376,7 +387,6 @@ class WISEData:
             r = list(tqdm.tqdm(
                 p.imap(self._subprocess_select_and_bin, args), total=self.n_chunks, desc='select and bin'
             ))
-            # p.map(self._subprocess_select_and_bin, args)
             p.close()
             p.join()
 
@@ -395,8 +405,7 @@ class WISEData:
             binned_lcs = json.load(f)
         return binned_lcs
 
-    def _subprocess_select_and_bin(self, chunk_number):
-
+    def _get_unbinned_lightcurves(self, chunk_number):
         # load only the files for this chunk
         fns = [os.path.join(self._cache_photometry_dir, fn)
                for fn in os.listdir(self._cache_photometry_dir)
@@ -405,7 +414,10 @@ class WISEData:
             ))]
         logger.debug(f"chunk {chunk_number}: loading {len(fns)} files for chunk {chunk_number}")
         lightcurves = pd.concat([pd.read_csv(fn) for fn in fns])
+        return lightcurves
 
+    def _subprocess_select_and_bin(self, chunk_number):
+        lightcurves = self._get_unbinned_lightcurves(chunk_number)
         # run through the ids and bin the lightcurves
         unique_id = lightcurves.wise_id.unique()
         logger.debug(f"chunk {chunk_number}: going through {len(unique_id)} IDs")
@@ -436,10 +448,14 @@ class WISEData:
 
                 for b in self.bands:
                     f = lightcurve[f"{b}{self.flux_key_ext}"][epoch_mask]
-                    mean = np.average(f, weights=lightcurve[f"{b}{self.error_key_ext}"][epoch_mask])
-                    u = np.sqrt(sum((f - mean) ** 2) / len(f))
+                    e = lightcurve[f"{b}{self.error_key_ext}"][epoch_mask]
+                    w = e / sum(e)
+                    mean = np.average(f, weights=w)
+                    u_rms = np.sqrt(sum((f - mean) ** 2) / len(f))
+                    u_mes = np.sqrt(sum(e**2 / len(e)))
                     r[f'{b}_mean_flux'] = mean
-                    r[f'{b}_flux_rms'] = u
+                    r[f'{b}_flux_rms'] = max(u_rms, u_mes)
+                    # r[f'{b}_flux_rms'] = u_rms
 
                 binned_lc = binned_lc.append(r, ignore_index=True)
 
@@ -471,25 +487,36 @@ class WISEData:
     # START MAKE PLOTTING FUNCTIONS     #
     #####################################
 
-    def plot_lc(self, wise_id=None, interactive=False, fn=None, ax=None, save=True):
+    def plot_lc(self, wise_id=None, interactive=False, fn=None, ax=None, save=True, plot_unbinned=False,
+                plot_binned=True,
+                **kwargs):
 
         logger.debug(f"loading binned lightcurves")
         lcs = self.load_binned_lcs()
 
         if wise_id:
             lc = pd.DataFrame.from_dict(lcs[wise_id])
+            if plot_unbinned:
+                _chunk_number = self._get_chunk_number(wise_id)
+                unbinned_lcs = self._get_unbinned_lightcurves(_chunk_number)
+                unbinned_lc = unbinned_lcs[unbinned_lcs.wise_id == int(wise_id)]
         else:
             raise NotImplementedError
 
         if not ax:
-            fig, ax = plt.subplots()
+            fig, ax = plt.subplots(**kwargs)
         else:
             fig = plt.gcf()
 
         for b in self.bands:
-            ax.errorbar(lc.mean_mjd, lc[f"{b}_mean_flux"], yerr=lc[f"{b}_flux_rms"],
-                        label=b, ls='', marker='s', c=self.band_plot_colors[b], markersize=4,
-                        markeredgecolor='k', ecolor='k', capsize=2)
+            if plot_binned:
+                ax.errorbar(lc.mean_mjd, lc[f"{b}_mean_flux"], yerr=lc[f"{b}_flux_rms"],
+                            label=b, ls='', marker='s', c=self.band_plot_colors[b], markersize=4,
+                            markeredgecolor='k', ecolor='k', capsize=2)
+            if plot_unbinned:
+                ax.errorbar(unbinned_lc.mjd, unbinned_lc[f"{b}_flux"], yerr=unbinned_lc[f"{b}_flux_error"],
+                            label=f"{b} unbinned", ls='', marker='o', c=self.band_plot_colors[b], markersize=4,
+                            alpha=0.3)
 
         ax.set_xlabel('MJD')
         ax.set_ylabel('flux')
