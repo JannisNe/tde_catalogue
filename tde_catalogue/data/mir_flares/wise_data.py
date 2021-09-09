@@ -120,7 +120,7 @@ class WISEData:
             self.parent_sample.df[self.parent_sample_wise_skysep_key] = np.inf
 
             sin_bounds = np.linspace(
-                np.sin(np.radians(min_dec * (1 + np.sign(min_dec) * 1e-6))),
+                np.sin(np.radians(min_dec * (1 - np.sign(min_dec) * 1e-6))),
                 np.sin(np.radians(max_dec)),
                 n_chunks+1,
                 endpoint=True
