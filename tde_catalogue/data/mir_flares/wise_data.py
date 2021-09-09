@@ -58,7 +58,7 @@ class WISEData:
     band_plot_colors = {'W1': 'r', 'W2': 'b'}
 
     def __init__(self,
-                 min_sep_arcsec=60,
+                 min_sep_arcsec=10,
                  n_chunks=8,
                  base_name=base_name,
                  parent_sample_class=CombinedParentSample):
@@ -84,6 +84,10 @@ class WISEData:
         self.parent_dec_key = parent_sample.default_keymap['dec'] if parent_sample else None
         self.parent_wise_source_id_key = 'WISE_id'
         self.parent_sample_wise_skysep_key = 'sep_to_WISE_source'
+        self.parent_sample_default_entries = {
+            self.parent_wise_source_id_key: "",
+            self.parent_sample_wise_skysep_key: np.inf
+        }
 
         # set up directories
         self.cache_dir = os.path.join(cache_dir, base_name)
@@ -116,8 +120,8 @@ class WISEData:
             min_dec = min(self.parent_sample.df[self.parent_dec_key])
             max_dec = max(self.parent_sample.df[self.parent_dec_key])
             logger.info(f'Declination: ({min_dec}, {max_dec})')
-            self.parent_sample.df[self.parent_wise_source_id_key] = ""
-            self.parent_sample.df[self.parent_sample_wise_skysep_key] = np.inf
+            for k, default in self.parent_sample_default_entries.items():
+                self.parent_sample.df[k] = default
 
             sin_bounds = np.linspace(
                 np.sin(np.radians(min_dec * (1 - np.sign(min_dec) * 1e-6))),
@@ -181,47 +185,40 @@ class WISEData:
     # START MATCH PARENT SAMPLE TO WISE SOURCES         #
     #####################################################
 
-    def match_all_chunks(self, **table_name):
+    def match_all_chunks(self, table_name="AllWISE Source Catalog"):
         for i in range(len(self.dec_intervalls)):
-            self.match_single_chunk(i, **table_name)
-        self.parent_sample.save_local()
+            self._match_single_chunk(i, table_name)
 
-    def match_single_chunk(self, chunk_number,
-                           table_name="AllWISE Source Catalog"):
-        """
-        Match the parent sample to WISE
-        :param chunk_number: int, number of the declination chunk
-        :param table_name: str, optional, WISE table to match to, default is AllWISE Source Catalog
-        """
+        _dupe_mask = self._get_dubplicated_wise_id_mask()
+        if np.any(_dupe_mask):
+            self._rematch_duplicates(table_name, _dupe_mask)
+            _inf_mask = ~(self.parent_sample.df[self.parent_sample_wise_skysep_key] < np.inf)
+            if np.any(_inf_mask):
+                logger.info(f"Still {len(self.parent_sample.df[_inf_mask])} entries without match."
+                            f"Looking in NoeWISE Photometry")
+                self._rematch_duplicates(table_name='NEOWISE-R Single Exposure (L1b) Source Table', mask=_inf_mask)
 
-        dec_intervall_mask = self.dec_interval_masks[chunk_number]
-        logger.debug(f"Any selected: {np.any(dec_intervall_mask)}")
+        if not np.any(self._get_dubplicated_wise_id_mask()):
+            self.parent_sample.save_local()
+        else:
+            raise Exception
 
-        selected_parent_sample = copy.copy(self.parent_sample.df.loc[dec_intervall_mask,
-                                                                     [self.parent_ra_key, self.parent_dec_key]])
-        selected_parent_sample.rename(columns={self.parent_dec_key: 'dec',
-                                               self.parent_ra_key: 'ra'},
-                                      inplace=True)
-        logger.debug(f"{len(selected_parent_sample)} in dec interval")
-
-        # write to IPAC formatted table
-        _selected_parent_sample_astrotab = Table.from_pandas(selected_parent_sample)
-        _parent_sample_declination_band_file = os.path.join(self.cache_dir, f"parent_sample_chunk{chunk_number}.xml")
-        logger.debug(f"writing {len(_selected_parent_sample_astrotab)} "
-                     f"objects to {_parent_sample_declination_band_file}")
-        _selected_parent_sample_astrotab.write(_parent_sample_declination_band_file, format='ipac', overwrite=True)
-
-        # use Gator to query IRSA
-        _output_file = os.path.join(self.cache_dir, f"parent_sample_chunk{chunk_number}.tbl")
+    def _run_gator_match(self, in_file, out_file, table_name,
+                         one_to_one=True, minsep_arcsec=None):
+        _one_to_one = '-F one_to_one=1 ' if one_to_one else ''
+        _minsep_arcsec = self.min_sep.to("arcsec").value if minsep_arcsec is None else minsep_arcsec
+        _db_name = self.get_db_name(table_name)
+        _id_key = 'cntr' if 'allwise' in _db_name else 'allwise_cntr'
+        _des = 'designation,' if 'allwise' in _db_name else ''
         submit_cmd = f'curl ' \
-                     f'-o {_output_file} ' \
-                     f'-F filename=@{_parent_sample_declination_band_file} ' \
-                     f'-F catalog={self.get_db_name(table_name)} ' \
+                     f'-o {out_file} ' \
+                     f'-F filename=@{in_file} ' \
+                     f'-F catalog={_db_name} ' \
                      f'-F spatial=Upload ' \
-                     f'-F uradius={self.min_sep.to("arcsec").value} ' \
+                     f'-F uradius={_minsep_arcsec} ' \
                      f'-F outfmt=1 ' \
-                     f'-F one_to_one=1 ' \
-                     f'-F selcols=designation,source_id,ra,dec,sigra,sigdec,cntr ' \
+                     f'{_one_to_one}' \
+                     f'-F selcols={_des}source_id,ra,dec,sigra,sigdec,{_id_key} ' \
                      f'"https://irsa.ipac.caltech.edu/cgi-bin/Gator/nph-query"'
 
         logger.debug(f'submit command: {submit_cmd}')
@@ -231,9 +228,45 @@ class WISEData:
         if err_msg:
             logger.error(err_msg.decode())
 
+    def _match_to_wise(self, in_filename, out_filename, mask, table_name, **gator_kwargs):
+        selected_parent_sample = copy.copy(
+            self.parent_sample.df.loc[mask, [self.parent_ra_key, self.parent_dec_key]])
+        selected_parent_sample.rename(columns={self.parent_dec_key: 'dec',
+                                               self.parent_ra_key: 'ra'},
+                                      inplace=True)
+        logger.debug(f"{len(selected_parent_sample)} selected")
+
+        # write to IPAC formatted table
+        _selected_parent_sample_astrotab = Table.from_pandas(selected_parent_sample, index=True)
+        logger.debug(f"writing {len(_selected_parent_sample_astrotab)} "
+                     f"objects to {in_filename}")
+        _selected_parent_sample_astrotab.write(in_filename, format='ipac', overwrite=True)
+
+        # use Gator to query IRSA
+        self._run_gator_match(in_filename, out_filename, table_name, **gator_kwargs)
+
         # load the result file
-        gator_res = Table.read(_output_file, format='ipac')
+        gator_res = Table.read(out_filename, format='ipac')
         logger.debug(f"found {len(gator_res)} results")
+        return gator_res
+
+    def _match_single_chunk(self, chunk_number, table_name):
+        """
+        Match the parent sample to WISE
+        :param chunk_number: int, number of the declination chunk
+        :param table_name: str, optional, WISE table to match to, default is AllWISE Source Catalog
+        """
+
+        dec_intervall_mask = self.dec_interval_masks[chunk_number]
+        logger.debug(f"Any selected: {np.any(dec_intervall_mask)}")
+        _parent_sample_declination_band_file = os.path.join(self.cache_dir, f"parent_sample_chunk{chunk_number}.xml")
+        _output_file = os.path.join(self.cache_dir, f"parent_sample_chunk{chunk_number}.tbl")
+        gator_res = self._match_to_wise(
+            in_filename=_parent_sample_declination_band_file,
+            out_filename=_output_file,
+            mask=dec_intervall_mask,
+            table_name=table_name
+        )
 
         # insert the corresponding separation to the WISE source into the parent sample
         self.parent_sample.df.loc[
@@ -246,6 +279,63 @@ class WISEData:
             dec_intervall_mask,
             self.parent_wise_source_id_key
         ] = list(gator_res["cntr"])
+
+    def _get_dubplicated_wise_id_mask(self):
+        idf_sorted_sep = self.parent_sample.df.sort_values(self.parent_sample_wise_skysep_key)
+        idf_sorted_sep['duplicate'] = idf_sorted_sep[self.parent_wise_source_id_key].duplicated(keep='first')
+        idf_sorted_sep.sort_index(inplace=True)
+        _inf_mask = idf_sorted_sep[self.parent_sample_wise_skysep_key] <= np.inf
+        _dupe_mask = idf_sorted_sep['duplicate'] & (~_inf_mask)
+        if np.any(_dupe_mask):
+            _N_dupe = len(self.parent_sample.df[_dupe_mask])
+            logger.info(f"{_N_dupe} duplicated entries in parent sample")
+        return _dupe_mask
+
+    def _rematch_duplicates(self, table_name, mask=None):
+        if mask is None:
+            mask = self._get_dubplicated_wise_id_mask()
+
+        for k, default in self.parent_sample_default_entries.items():
+            self.parent_sample.df.loc[mask, k] = default
+
+        _dupe_infile = os.path.join(self.cache_dir, f"parent_sample_duplicated.xml")
+        _dupe_output_file = os.path.join(self.cache_dir, f"parent_sample_duplicated.tbl")
+        _gator_res = self._match_to_wise(
+            in_filename=_dupe_infile,
+            out_filename=_dupe_output_file,
+            mask=mask,
+            table_name=table_name,
+            one_to_one=False
+        ).to_pandas()
+
+        if len(_gator_res) == 0:
+            logger.debug('No additional matches found')
+            return
+
+        _dupe_inds = list(self.parent_sample.df[mask].index)
+        for in_id in tqdm.tqdm(_dupe_inds, desc='finding match for duplicates'):
+            _m = _gator_res.index_01 == in_id
+            _sorted_sel = _gator_res[_m].sort_values('dist_x')
+            for _, r in _sorted_sel.iterrows():
+                _wise_id = r['cntr' if 'allwise' in self.get_db_name(table_name) else 'allwise_cntr']
+                _skysep = r['dist_x']
+                __m = self.parent_sample.df[self.parent_wise_source_id_key] == _wise_id
+
+                if not np.any(__m):
+                    self.parent_sample.df.loc[in_id, self.parent_sample_wise_skysep_key] = _skysep
+                    self.parent_sample.df.loc[in_id, self.parent_wise_source_id_key] = _wise_id
+                    break
+
+                else:
+                    __msep = self.parent_sample.df[self.parent_sample_wise_skysep_key][__m] > _skysep
+                    if np.any(__msep):
+                        columns = ['ra', 'dec', self.parent_sample_wise_skysep_key, self.parent_wise_source_id_key]
+                        raise Exception(
+                            f"WISE ID: {_wise_id} with skysep {_skysep}:\n"
+                            f"{self.parent_sample.df.loc[in_id].to_string()}"
+                            f" \n"
+                            f"{self.parent_sample.df.loc[__m].to_string(columns=columns)}"
+                        )
 
     ###################################################
     # END MATCH PARENT SAMPLE TO WISE SOURCES         #
@@ -455,7 +545,6 @@ class WISEData:
                     u_mes = np.sqrt(sum(e**2 / len(e)))
                     r[f'{b}_mean_flux'] = mean
                     r[f'{b}_flux_rms'] = max(u_rms, u_mes)
-                    # r[f'{b}_flux_rms'] = u_rms
 
                 binned_lc = binned_lc.append(r, ignore_index=True)
 
