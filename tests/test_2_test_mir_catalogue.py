@@ -113,6 +113,11 @@ class WISEDataTestVersion(WISEData):
                          base_name=WISEDataTestVersion.base_name + name_ext,
                          parent_sample_class=CombinedSampleTestVersion)
 
+    def get_photometric_data(self, tables=None, perc=1, wait=0):
+        if tables is None:
+            tables = ['AllWISE Multiepoch Photometry Table']
+        super(WISEDataTestVersion, self).get_photometric_data(tables, perc, wait)
+
     def clean_up(self):
         logger.info(f"removing {self.cache_dir}")
         shutil.rmtree(self.cache_dir)
@@ -155,6 +160,14 @@ class TestMIRFlareCatalogue(unittest.TestCase):
 
         self.assertLess(sep[closest_ind][0], 0.5 * u.arcsec)
         wise_data.parent_sample.plot_cutout(closest_ind[0], arcsec=40)
+
+        logger.info(f"\n\n Testing getting photometry \n")
+        wise_data.get_photometric_data()
+
+        logger.info(f"\n Test plot lightcurves \n")
+        lcs = wise_data.load_binned_lcs()
+        plot_id = list(lcs.keys())[10]
+        wise_data.plot_lc(plot_id)
 
     @classmethod
     def tearDownClass(cls):
