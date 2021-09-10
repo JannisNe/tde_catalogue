@@ -82,7 +82,7 @@ class WISEData:
         # set up parent sample keys
         self.parent_ra_key = parent_sample.default_keymap['ra'] if parent_sample else None
         self.parent_dec_key = parent_sample.default_keymap['dec'] if parent_sample else None
-        self.parent_wise_source_id_key = 'WISE_id'
+        self.parent_wise_source_id_key = 'AllWISE_id'
         self.parent_sample_wise_skysep_key = 'sep_to_WISE_source'
         self.parent_sample_default_entries = {
             self.parent_wise_source_id_key: "",
@@ -204,11 +204,11 @@ class WISEData:
             raise Exception
 
     def _run_gator_match(self, in_file, out_file, table_name,
-                         one_to_one=True, minsep_arcsec=None):
+                         one_to_one=True, minsep_arcsec=None, additional_keys=''):
         _one_to_one = '-F one_to_one=1 ' if one_to_one else ''
         _minsep_arcsec = self.min_sep.to("arcsec").value if minsep_arcsec is None else minsep_arcsec
         _db_name = self.get_db_name(table_name)
-        _id_key = 'cntr' if 'allwise' in _db_name else 'allwise_cntr'
+        _id_key = 'cntr' if 'allwise' in _db_name else 'allwise_cntr,cntr'
         _des = 'designation,' if 'allwise' in _db_name else ''
         submit_cmd = f'curl ' \
                      f'-o {out_file} ' \
@@ -218,7 +218,7 @@ class WISEData:
                      f'-F uradius={_minsep_arcsec} ' \
                      f'-F outfmt=1 ' \
                      f'{_one_to_one}' \
-                     f'-F selcols={_des}source_id,ra,dec,sigra,sigdec,{_id_key} ' \
+                     f'-F selcols={_des}source_id,ra,dec,sigra,sigdec,{_id_key}{additional_keys} ' \
                      f'"https://irsa.ipac.caltech.edu/cgi-bin/Gator/nph-query"'
 
         logger.debug(f'submit command: {submit_cmd}')
@@ -279,6 +279,10 @@ class WISEData:
             dec_intervall_mask,
             self.parent_wise_source_id_key
         ] = list(gator_res["cntr"])
+
+        _no_match_mask = self.parent_sample.df[self.parent_sample_wise_skysep_key].isna() & dec_intervall_mask
+        for k, default in self.parent_sample_default_entries.items():
+            self.parent_sample.df.loc[_no_match_mask, k] = default
 
     def _get_dubplicated_wise_id_mask(self):
         idf_sorted_sep = self.parent_sample.df.sort_values(self.parent_sample_wise_skysep_key)
@@ -388,9 +392,11 @@ class WISEData:
         logger.debug(f"\n{q}")
         return q
 
-    def _chunk_photometry_cache_filename(self, table_nice_name, chunk_number):
+    def _chunk_photometry_cache_filename(self, table_nice_name, chunk_number, additional_neowise_query=False):
         table_name = self.get_db_name(table_nice_name)
-        fn = f"{self._cached_raw_photometry_prefix}_{table_name}{self._split_photometry_key}{chunk_number}.csv"
+        _additional_neowise_query = '_neowise_gator' if additional_neowise_query else ''
+        fn = f"{self._cached_raw_photometry_prefix}_{table_name}{_additional_neowise_query}" \
+             f"{self._split_photometry_key}{chunk_number}.csv"
         return os.path.join(self._cache_photometry_dir, fn)
 
     def _thread_wait_and_get_results(self, t, i):
@@ -418,7 +424,7 @@ class WISEData:
     def _query_for_photometry(self, tables, perc, wait):
 
         # only integers can be uploaded
-        wise_id = np.array([int(idd) for idd in self.parent_sample.df[self.parent_wise_source_id_key]])
+        wise_id = np.array([int(idd) for idd in self.parent_sample.df[self.parent_wise_source_id_key] if idd])
         logger.debug(f"{len(wise_id)} IDs in total")
 
     # ----------------------------------------------------------------------
@@ -426,7 +432,7 @@ class WISEData:
     # ----------------------------------------------------------------------
 
         self.jobs = dict()
-        job_keys = list()
+        threads = list()
         for t in np.atleast_1d(tables):
             qstring = self._get_photometry_query_string(t)
             self.jobs[t] = dict()
@@ -447,16 +453,12 @@ class WISEData:
                 logger.info(f'submitted job for {t} for chunk {i}: ')
                 logger.debug(f'Job: {job.url}; {job.phase}')
                 self.jobs[t][i] = job
-                job_keys.append((t, i))
+                _thread = threading.Thread(target=self._thread_wait_and_get_results, args=(t, i))
+                _thread.start()
+                threads.append(_thread)
 
         logger.info(f"wait for {wait} hours to give jobs some time")
         time.sleep(wait * 3600)
-
-        threads = list()
-        for t, i in job_keys:
-            _thread = threading.Thread(target=self._thread_wait_and_get_results, args=(t, i))
-            _thread.start()
-            threads.append(_thread)
 
         for t in threads:
             t.join()
