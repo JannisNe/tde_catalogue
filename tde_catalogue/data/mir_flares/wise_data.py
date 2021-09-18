@@ -30,16 +30,24 @@ class WISEData:
 
     photometry_table_keymap = {
         'AllWISE Multiepoch Photometry Table': {
-            'w1flux_ep':    'W1_flux',
-            'w1sigflux_ep': 'W1_flux_error',
-            'w2flux_ep':    'W2_flux',
-            'w2sigflux_ep': 'W2_flux_error'
+            # 'w1flux_ep':    'W1_flux',
+            # 'w1sigflux_ep': 'W1_flux_error',
+            # 'w2flux_ep':    'W2_flux',
+            # 'w2sigflux_ep': 'W2_flux_error',
+            'w1mpro_ep':    'W1_mag',
+            'w1sigmpro_ep': 'W1_mag_error',
+            'w2mpro_ep':    'W2_mag',
+            'w2sigmpro_ep': 'W2_mag_error'
         },
         'NEOWISE-R Single Exposure (L1b) Source Table': {
-            'w1flux':       'W1_flux',
-            'w1sigflux':    'W1_flux_error',
-            'w2flux':       'W2_flux',
-            'w2sigflux':    'W2_flux_error'
+            # 'w1flux':       'W1_flux',
+            # 'w1sigflux':    'W1_flux_error',
+            # 'w2flux':       'W2_flux',
+            # 'w2sigflux':    'W2_flux_error',
+            'w1mpro':       'W1_mag',
+            'w1sigmpro':    'W1_mag_error',
+            'w2mpro':       'W2_mag',
+            'w2sigmpro':    'W2_mag_error'
         }
     }
 
@@ -53,8 +61,8 @@ class WISEData:
     ]
 
     bands = ['W1', 'W2']
-    flux_key_ext = "_flux"
-    error_key_ext = "_flux_error"
+    flux_key_ext = "_mag"
+    error_key_ext = "_mag_error"
     band_plot_colors = {'W1': 'r', 'W2': 'b'}
 
     def __init__(self,
@@ -105,6 +113,7 @@ class WISEData:
         self._cached_raw_photometry_prefix = 'raw_photometry'
         self.jobs = None
         self.binned_lightcurves_filename = os.path.join(self.lightcurve_dir, "binned_lightcurves.json")
+        self._no_allwise_source = None
 
         #########################
         # END SET-UP            #
@@ -197,6 +206,12 @@ class WISEData:
                 logger.info(f"Still {len(self.parent_sample.df[_inf_mask])} entries without match."
                             f"Looking in NoeWISE Photometry")
                 self._rematch_duplicates(table_name='NEOWISE-R Single Exposure (L1b) Source Table', mask=_inf_mask)
+
+        self._no_allwise_source = self.parent_sample.df[self.parent_sample_wise_skysep_key] == np.inf
+        if np.any(self._no_allwise_source):
+            # TODO: raise Exception!
+            logger.warning(f"{len(self.parent_sample.df[self._no_allwise_source])} of {len(self.parent_sample.df)} "
+                           f"entries without match!")
 
         if not np.any(self._get_dubplicated_wise_id_mask()):
             self.parent_sample.save_local()
@@ -296,6 +311,7 @@ class WISEData:
         return _dupe_mask
 
     def _rematch_duplicates(self, table_name, mask=None):
+        # TODO: find a way to query NeoWISE directly for parent sample sources without match
         if mask is None:
             mask = self._get_dubplicated_wise_id_mask()
 
@@ -367,6 +383,7 @@ class WISEData:
         self._combine_binned_lcs()
 
     def _get_photometry_query_string(self, table_name):
+        # TODO: find a way to query NeoWISE directly for parent sample sources without match
         """
         Construct a query string to submit to IRSA
         :param table_name: str, table name
@@ -439,6 +456,7 @@ class WISEData:
             for i, m in enumerate(self.dec_interval_masks):
 
                 # if perc is smaller than one select only a subset of wise IDs
+                # TODO: fix!
                 wise_id_sel = wise_id[np.array(m)]
                 if perc < 1:
                     logger.debug(f"Getting {perc:.2f} % of IDs")
