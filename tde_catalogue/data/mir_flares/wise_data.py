@@ -399,14 +399,15 @@ class WISEData:
                 pass
 
     def _thread_query_photometry_gator(self):
+
         self._run_gator_match(
-            in_file,
-            out_file,
-            table_name,
-            one_to_one=True,
-            minsep_arcsec=None,
+            in_file='',
+            out_file='',
+            table_name='',
+            one_to_one=False,
+            minsep_arcsec=self.min_sep.to('arcsec').value,
             additional_keys=''
-        ):
+        )
 
     # ------------------------------------------ #
     # END using GATOR to get photometry          #
