@@ -398,6 +398,16 @@ class WISEData:
             for i, m in enumerate(self.dec_interval_masks):
                 pass
 
+    def _thread_query_photometry_gator(self):
+        self._run_gator_match(
+            in_file,
+            out_file,
+            table_name,
+            one_to_one=True,
+            minsep_arcsec=None,
+            additional_keys=''
+        ):
+
     # ------------------------------------------ #
     # END using GATOR to get photometry          #
     # ----------------------------------------------------------------------------------- #
@@ -481,7 +491,7 @@ class WISEData:
 
                 # if perc is smaller than one select only a subset of wise IDs
                 # TODO: fix!
-                wise_id_sel = wise_id[np.array(m) & (~self._no_allwise_source)]
+                wise_id_sel = wise_id[np.array(m)[~self._no_allwise_source]]
                 if perc < 1:
                     logger.debug(f"Getting {perc:.2f} % of IDs")
                     N_ids = int(round(len(wise_id_sel) * perc))
