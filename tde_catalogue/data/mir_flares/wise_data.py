@@ -365,7 +365,7 @@ class WISEData:
     # START GET PHOTOMETRY DATA       #
     ###################################
 
-    def get_photometric_data(self, tables=None, perc=1, wait=5):
+    def get_photometric_data(self, tables=None, perc=1, wait=5, service='tap'):
         """
         Load photometric data from the IRSA server for the matched sample
         :param tables: list like, WISE tables to use for photometry query, defaults to AllWISE and NOEWISER photometry
@@ -378,12 +378,35 @@ class WISEData:
                 'NEOWISE-R Single Exposure (L1b) Source Table'
             ]
 
-        self._query_for_photometry(tables, perc, wait)
-        self._select_individual_lightcurves_and_bin()
-        self._combine_binned_lcs()
+        if service == 'tap':
+            self._query_for_photometry(tables, perc, wait)
+            self._select_individual_lightcurves_and_bin()
+            self._combine_binned_lcs()
+
+        elif service == 'gator':
+            pass
+
+    # ----------------------------------------------------------------------------------- #
+    # START using GATOR to get photometry        #
+    # ------------------------------------------ #
+
+    def _query_for_photometry_gator(self, tables, perc):
+        threads = list()
+        for t in np.atleast_1d(tables):
+            qstring = self._get_photometry_query_string(t)
+            self.jobs[t] = dict()
+            for i, m in enumerate(self.dec_interval_masks):
+                pass
+
+    # ------------------------------------------ #
+    # END using GATOR to get photometry          #
+    # ----------------------------------------------------------------------------------- #
+
+    # ----------------------------------------------------------------------------------- #
+    # START using TAP to get photometry        #
+    # ---------------------------------------- #
 
     def _get_photometry_query_string(self, table_name):
-        # TODO: find a way to query NeoWISE directly for parent sample sources without match
         """
         Construct a query string to submit to IRSA
         :param table_name: str, table name
@@ -441,7 +464,8 @@ class WISEData:
     def _query_for_photometry(self, tables, perc, wait):
 
         # only integers can be uploaded
-        wise_id = np.array([int(idd) for idd in self.parent_sample.df[self.parent_wise_source_id_key] if idd])
+        wise_id = np.array(self.parent_sample.df[self.parent_wise_source_id_key][~self._no_allwise_source]).astype(int)
+        # wise_id = np.array([int(idd) for idd in self.parent_sample.df[self.parent_wise_source_id_key] if idd])
         logger.debug(f"{len(wise_id)} IDs in total")
 
     # ----------------------------------------------------------------------
@@ -457,7 +481,7 @@ class WISEData:
 
                 # if perc is smaller than one select only a subset of wise IDs
                 # TODO: fix!
-                wise_id_sel = wise_id[np.array(m)]
+                wise_id_sel = wise_id[np.array(m) & (~self._no_allwise_source)]
                 if perc < 1:
                     logger.debug(f"Getting {perc:.2f} % of IDs")
                     N_ids = int(round(len(wise_id_sel) * perc))
@@ -587,6 +611,10 @@ class WISEData:
         logger.info(f"saving final lightcurves under {fn}")
         with open(fn, "w") as f:
             json.dump(d, f)
+
+    # ---------------------------------------- #
+    # END using TAP to get photometry          #
+    # ----------------------------------------------------------------------------------- #
 
     #################################
     # END GET PHOTOMETRY DATA       #
