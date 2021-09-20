@@ -1,4 +1,4 @@
-import unittest, shutil, argparse, time
+import unittest, shutil, argparse, time, os
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy import units as u
@@ -162,17 +162,15 @@ class TestMIRFlareCatalogue(unittest.TestCase):
         wise_data.parent_sample.plot_cutout(closest_ind[0], arcsec=40)
 
         logger.info(f"\n\n Testing getting photometry \n")
-        logger.info(f"\nTesting TAP")
-        wise_data.get_photometric_data(service='tap', mag=True, flux=True)
-        logger.info(f"\nTesting GATOR")
-        wise_data.get_photometric_data(service='gator', mag=True, flux=True)
-
-        logger.info(f"\n Test plot lightcurves \n")
-        lcs = wise_data.load_binned_lcs()
-        plot_id = list(lcs.keys())[10]
         for s in ['gator', 'tap']:
+            logger.info(f"\nTesting {s.upper()}")
+            wise_data.get_photometric_data(service=s, mag=True, flux=True)
+            logger.info(f" --- Test plot lightcurves --- ")
+            lcs = wise_data.load_binned_lcs(s)
+            plot_id = list(lcs.keys())[10]
             for lumk in ['mag', 'flux']:
-                wise_data.plot_lc(plot_id, plot_unbinned=True, lum_key=lumk, service=s)
+                fn = os.path.join(wise_data.plots_dir, f"{plot_id}.pdf")
+                wise_data.plot_lc(plot_id, plot_unbinned=True, lum_key=lumk, service=s, fn=fn)
 
     @classmethod
     def tearDownClass(cls):

@@ -435,7 +435,7 @@ class WISEData:
             json.dump(binned_lcs, f)
 
     def _load_chunk_binned_lcs(self, chunk_number, service):
-        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number. service)
+        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number, service)
         with open(fn, "r") as f:
             binned_lcs = json.load(f)
         return binned_lcs
@@ -561,7 +561,8 @@ class WISEData:
             lum_keys = [c for c in lightcurves.columns if ("W1" in c) or ("W2" in c)]
             lightcurve = selected_data[['mjd'] + lum_keys]
             binned_lc = self.bin_lightcurve(lightcurve)
-            binned_lcs[int(parent_sample_idx)] = binned_lc.to_dict()
+            wise_id = self.parent_sample.df.loc[int(parent_sample_idx), self.parent_wise_source_id_key]
+            binned_lcs[f"{int(parent_sample_idx)}_{wise_id}"] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
         self._save_chunk_binned_lcs(chunk_number, 'gator', binned_lcs)
@@ -735,7 +736,8 @@ class WISEData:
             m = lightcurves.wise_id == ID
             lightcurve = lightcurves[m]
             binned_lc = self.bin_lightcurve(lightcurve)
-            binned_lcs[int(ID)] = binned_lc.to_dict()
+            parent_sample_entry_id = np.where(self.parent_sample.df[self.parent_wise_source_id_key] == ID)[0][0]
+            binned_lcs[f"{int(parent_sample_entry_id)}_{int(ID)}"] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
         self._save_chunk_binned_lcs(chunk_number, 'tap', binned_lcs)
