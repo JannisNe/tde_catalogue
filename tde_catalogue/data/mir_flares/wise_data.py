@@ -121,7 +121,6 @@ class WISEData:
         self._split_photometry_key = '__chunk'
         self._cached_raw_photometry_prefix = 'raw_photometry'
         self.jobs = None
-        self.binned_lightcurves_filename = os.path.join(self.lightcurve_dir, "binned_lightcurves.json")
         self._no_allwise_source = None
 
         #########################
@@ -212,6 +211,9 @@ class WISEData:
         else:
             logger.debug(f"{table_name} not in Table. Assuming it is the right name already.")
         return table_name
+
+    def binned_lightcurves_filename(self, service):
+        return os.path.join(self.lightcurve_dir, f"binned_lightcurves_{service}.json")
 
     ###########################################################################################################
     # START MATCH PARENT SAMPLE TO WISE SOURCES         #
@@ -421,34 +423,34 @@ class WISEData:
             self._query_for_photometry_gator(tables, perc, mag, flux)
             self._select_and_bin_lightcurves_gator()
 
-        self._combine_binned_lcs()
+        self._combine_binned_lcs(service)
 
-    def _cache_chunk_binned_lightcurves_filename(self, chunk_number):
-        fn = f"binned_lightcurves{self._split_photometry_key}{chunk_number}.json"
+    def _cache_chunk_binned_lightcurves_filename(self, chunk_number, service):
+        fn = f"binned_lightcurves_{service}{self._split_photometry_key}{chunk_number}.json"
         return os.path.join(self._cache_photometry_dir, fn)
 
-    def _save_chunk_binned_lcs(self, chunk_number, binned_lcs):
-        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number)
+    def _save_chunk_binned_lcs(self, chunk_number, service, binned_lcs):
+        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number, service)
         with open(fn, "w") as f:
             json.dump(binned_lcs, f)
 
-    def _load_chunk_binned_lcs(self, chunk_number):
-        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number)
+    def _load_chunk_binned_lcs(self, chunk_number, service):
+        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number. service)
         with open(fn, "r") as f:
             binned_lcs = json.load(f)
         return binned_lcs
 
-    def load_binned_lcs(self):
-        with open(self.binned_lightcurves_filename, "r") as f:
+    def load_binned_lcs(self, service):
+        with open(self.binned_lightcurves_filename(service), "r") as f:
             return json.load(f)
 
-    def _combine_binned_lcs(self):
-        dicts = [self._load_chunk_binned_lcs(c) for c in range(self.n_chunks)]
+    def _combine_binned_lcs(self, service):
+        dicts = [self._load_chunk_binned_lcs(c, service) for c in range(self.n_chunks)]
         d = dicts[0]
         for dd in dicts[1:]:
             d.update(dd)
 
-        fn = self.binned_lightcurves_filename
+        fn = self.binned_lightcurves_filename(service)
         logger.info(f"saving final lightcurves under {fn}")
         with open(fn, "w") as f:
             json.dump(d, f)
@@ -562,7 +564,7 @@ class WISEData:
             binned_lcs[int(parent_sample_idx)] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
-        self._save_chunk_binned_lcs(chunk_number, binned_lcs)
+        self._save_chunk_binned_lcs(chunk_number, 'gator', binned_lcs)
 
     def _select_and_bin_lightcurves_gator(self, *args, **kwargs):
         self._select_individual_lightcurves_and_bin(*args, gator=True, **kwargs)
@@ -736,7 +738,7 @@ class WISEData:
             binned_lcs[int(ID)] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
-        self._save_chunk_binned_lcs(chunk_number, binned_lcs)
+        self._save_chunk_binned_lcs(chunk_number, 'tap', binned_lcs)
 
     # ---------------------------------------- #
     # END using TAP to get photometry          #
@@ -803,7 +805,7 @@ class WISEData:
                 plot_unbinned=False, plot_binned=True, lum_key='flux', service='tap', **kwargs):
 
         logger.debug(f"loading binned lightcurves")
-        lcs = self.load_binned_lcs()
+        lcs = self.load_binned_lcs(service)
         unbinned_lc = None
         _get_unbinned_lcs_fct = self._get_unbinned_lightcurves if service == 'tap' else self._get_unbinned_lightcurves_gator
 
