@@ -243,10 +243,11 @@ class WISEData:
             raise Exception
 
     def _run_gator_match(self, in_file, out_file, table_name,
-                         one_to_one=True, minsep_arcsec=None, additional_keys=''):
+                         one_to_one=True, minsep_arcsec=None, additional_keys='', silent=False):
         _one_to_one = '-F one_to_one=1 ' if one_to_one else ''
         _minsep_arcsec = self.min_sep.to("arcsec").value if minsep_arcsec is None else minsep_arcsec
         _db_name = self.get_db_name(table_name)
+        _silent = "-s " if silent else ""
 
         if _db_name == "allwise_p3as_mep":
             _sigpos = _source_id = _des = ""
@@ -258,6 +259,7 @@ class WISEData:
             _id_key = 'cntr' if 'allwise' in _db_name else 'allwise_cntr,cntr'
 
         submit_cmd = f'curl ' \
+                     f'{_silent}' \
                      f'-o {out_file} ' \
                      f'-F filename=@{in_file} ' \
                      f'-F catalog={_db_name} ' \
@@ -445,7 +447,12 @@ class WISEData:
             return json.load(f)
 
     def _combine_binned_lcs(self, service):
-        dicts = [self._load_chunk_binned_lcs(c, service) for c in range(self.n_chunks)]
+        dicts = list()
+        for c in range(self.n_chunks):
+            try:
+                dicts.append(self._load_chunk_binned_lcs(c, service))
+            except FileNotFoundError:
+                logger.warning(f"No file for {service}, chunk {c}")
         d = dicts[0]
         for dd in dicts[1:]:
             d.update(dd)
@@ -498,7 +505,8 @@ class WISEData:
             table_name=table_name,
             one_to_one=False,
             additional_keys=_additional_keys,
-            minsep_arcsec=4
+            minsep_arcsec=4,
+            silent=True
         )
 
         return res
@@ -736,7 +744,12 @@ class WISEData:
             m = lightcurves.wise_id == ID
             lightcurve = lightcurves[m]
             binned_lc = self.bin_lightcurve(lightcurve)
-            parent_sample_entry_id = np.where(self.parent_sample.df[self.parent_wise_source_id_key] == ID)[0][0]
+            try:
+                parent_sample_entry_id = np.where(
+                    np.array(self.parent_sample.df[self.parent_wise_source_id_key]) == int(ID)
+                )[0][0]
+            except IndexError:
+                parent_sample_entry_id = "0"
             binned_lcs[f"{int(parent_sample_entry_id)}_{int(ID)}"] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
@@ -811,17 +824,24 @@ class WISEData:
         unbinned_lc = None
         _get_unbinned_lcs_fct = self._get_unbinned_lightcurves if service == 'tap' else self._get_unbinned_lightcurves_gator
 
-        if wise_id:
-            lc = pd.DataFrame.from_dict(lcs[wise_id])
-            if plot_unbinned:
-                _chunk_number = self._get_chunk_number(wise_id=wise_id)
-                unbinned_lcs = _get_unbinned_lcs_fct(_chunk_number)
+        if not wise_id and parent_sample_idx:
+            wise_id = self.parent_sample.df.loc[int(parent_sample_idx), self.parent_wise_source_id_key]
+
+        if wise_id and not parent_sample_idx:
+            m = self.parent_sample.df[self.parent_wise_source_id_key] == wise_id
+            parent_sample_idx = self.parent_sample.df.index[m]
+
+        lc = pd.DataFrame.from_dict(lcs[f"{int(parent_sample_idx)}_{int(wise_id)}"])
+
+        if plot_unbinned:
+            _chunk_number = self._get_chunk_number(parent_sample_index=parent_sample_idx)
+
+            if service == 'tap':
+                unbinned_lcs = self._get_unbinned_lightcurves(_chunk_number)
                 unbinned_lc = unbinned_lcs[unbinned_lcs.wise_id == int(wise_id)]
-        else:
-            lc = pd.DataFrame(lcs[parent_sample_idx])
-            if plot_unbinned:
-                _chunk_number = self._get_chunk_number(parent_sample_index=parent_sample_idx)
-                unbinned_lcs = _get_unbinned_lcs_fct(_chunk_number)
+
+            else:
+                unbinned_lcs = self._get_unbinned_lightcurves_gator(_chunk_number)
                 unbinned_lc = unbinned_lcs[unbinned_lcs.index_01 == int(parent_sample_idx)]
 
         if not ax:
