@@ -113,14 +113,11 @@ class WISEDataTestVersion(WISEData):
                          base_name=WISEDataTestVersion.base_name + name_ext,
                          parent_sample_class=CombinedSampleTestVersion)
 
-    def get_photometric_data(self, tables=None, perc=1, wait=0):
+    def get_photometric_data(self, tables=None, perc=1, wait=0, service='tap', mag=True, flux=True):
         if tables is None:
             tables = ['AllWISE Multiepoch Photometry Table']
-        super(WISEDataTestVersion, self).get_photometric_data(tables, perc, wait)
+        super(WISEDataTestVersion, self).get_photometric_data(tables, perc, wait, service, mag, flux)
         
-    def _select_individual_lightcurves_and_bin(self, ncpu=1):
-        super(WISEDataTestVersion, self)._select_individual_lightcurves_and_bin(ncpu)
-
     def clean_up(self):
         logger.info(f"removing {self.cache_dir}")
         shutil.rmtree(self.cache_dir)
@@ -165,12 +162,17 @@ class TestMIRFlareCatalogue(unittest.TestCase):
         wise_data.parent_sample.plot_cutout(closest_ind[0], arcsec=40)
 
         logger.info(f"\n\n Testing getting photometry \n")
-        wise_data.get_photometric_data()
+        logger.info(f"\nTesting TAP")
+        wise_data.get_photometric_data(service='tap', mag=True, flux=True)
+        logger.info(f"\nTesting GATOR")
+        wise_data.get_photometric_data(service='gator', mag=True, flux=True)
 
         logger.info(f"\n Test plot lightcurves \n")
         lcs = wise_data.load_binned_lcs()
         plot_id = list(lcs.keys())[10]
-        wise_data.plot_lc(plot_id)
+        for s in ['gator', 'tap']:
+            for lumk in ['mag', 'flux']:
+                wise_data.plot_lc(plot_id, plot_unbinned=True, lum_key=lumk, service=s)
 
     @classmethod
     def tearDownClass(cls):
@@ -189,6 +191,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-l', '--logging_level', type=str, default='INFO', const='DEBUG', nargs='?')
     parser.add_argument('-p', '--percent', type=float, default=1)
+    parser.add_argument('--service', type=str, default='tap')
     parser.add_argument('-fn', '--filename', type=str, default='')
     cfg = parser.parse_args()
 
@@ -200,9 +203,8 @@ if __name__ == '__main__':
     init_time = time.time()
     wise_data.match_all_chunks()
     match_time = time.time()
-    # wise_data.get_photometric_data(perc=cfg.percent)
-    wise_data._select_individual_lightcurves_and_bin()
-    wise_data._combine_binned_lcs()
+    wise_data.get_photometric_data(perc=cfg.percent, service=cfg.service)
+    tables = ['AllWISE Multiepoch Photometry Table']
     phot_time = time.time()
 
     txt = f"{cfg.percent*100}% of {len(wise_data.parent_sample.df)} sources:\n" \
