@@ -28,26 +28,40 @@ class WISEData:
 
     ], columns=['nice_table_name', 'table_name'])
 
+    bands = ['W1', 'W2']
+    flux_key_ext = "_flux"
+    mag_key_ext = "_mag"
+    error_key_ext = "_error"
+    band_plot_colors = {'W1': 'r', 'W2': 'b'}
+
     photometry_table_keymap = {
         'AllWISE Multiepoch Photometry Table': {
-            # 'w1flux_ep':    'W1_flux',
-            # 'w1sigflux_ep': 'W1_flux_error',
-            # 'w2flux_ep':    'W2_flux',
-            # 'w2sigflux_ep': 'W2_flux_error',
-            'w1mpro_ep':    'W1_mag',
-            'w1sigmpro_ep': 'W1_mag_error',
-            'w2mpro_ep':    'W2_mag',
-            'w2sigmpro_ep': 'W2_mag_error'
+            'flux': {
+                'w1flux_ep':    f'W1{flux_key_ext}',
+                'w1sigflux_ep': f'W1{flux_key_ext}{error_key_ext}',
+                'w2flux_ep':    f'W2{flux_key_ext}',
+                'w2sigflux_ep': f'W2{flux_key_ext}{error_key_ext}'
+            },
+            'mag': {
+                'w1mpro_ep':    f'W1{mag_key_ext}',
+                'w1sigmpro_ep': f'W1{mag_key_ext}{error_key_ext}',
+                'w2mpro_ep':    f'W2{mag_key_ext}',
+                'w2sigmpro_ep': f'W2{mag_key_ext}{error_key_ext}'
+            }
         },
         'NEOWISE-R Single Exposure (L1b) Source Table': {
-            # 'w1flux':       'W1_flux',
-            # 'w1sigflux':    'W1_flux_error',
-            # 'w2flux':       'W2_flux',
-            # 'w2sigflux':    'W2_flux_error',
-            'w1mpro':       'W1_mag',
-            'w1sigmpro':    'W1_mag_error',
-            'w2mpro':       'W2_mag',
-            'w2sigmpro':    'W2_mag_error'
+            'flux': {
+                'w1flux':       f'W1{flux_key_ext}',
+                'w1sigflux':    f'W1{flux_key_ext}{error_key_ext}',
+                'w2flux':       f'W2{flux_key_ext}',
+                'w2sigflux':    f'W2{flux_key_ext}{error_key_ext}'
+            },
+            'mag': {
+                'w1mpro':       f'W1{mag_key_ext}',
+                'w1sigmpro':    f'W1{mag_key_ext}{error_key_ext}',
+                'w2mpro':       f'W2{mag_key_ext}',
+                'w2sigmpro':    f'W2{mag_key_ext}{error_key_ext}'
+            }
         }
     }
 
@@ -59,11 +73,6 @@ class WISEData:
         "saa_sep >= 5",
         "moon_masked like '00%'"
     ]
-
-    bands = ['W1', 'W2']
-    flux_key_ext = "_mag"
-    error_key_ext = "_mag_error"
-    band_plot_colors = {'W1': 'r', 'W2': 'b'}
 
     def __init__(self,
                  min_sep_arcsec=10,
@@ -157,16 +166,30 @@ class WISEData:
         else:
             logger.warning("No parent sample given!")
 
-    def _get_chunk_number(self, wise_id):
-        _ind = np.where(self.parent_sample.df[self.parent_wise_source_id_key] == int(wise_id))[0]
-        logger.debug(f"wise ID {wise_id} at index {_ind}")
-        _in_masks = [m[_ind] for m in self.dec_interval_masks]
-        _chunk_number = np.where(_in_masks)[0]
-        if len(_chunk_number) > 1:
+    def _get_chunk_number(self, wise_id=None, parent_sample_index=None):
+        if (not wise_id) and (not parent_sample_index):
             raise Exception
-        _chunk_number = _chunk_number[0]
-        logger.debug(f"chunk number is {_chunk_number} for {wise_id}")
-        return _chunk_number
+
+        if parent_sample_index:
+            indexes = [self.parent_sample.df[m].index for m in self.dec_interval_masks]
+            _in_indexes = [int(parent_sample_index) in idx for idx in indexes]
+            _chunk_number = np.where(_in_indexes)[0]
+            if len(_chunk_number) > 1:
+                raise Exception
+            _chunk_number = _chunk_number[0]
+            logger.debug(f"chunk number is {_chunk_number} for {parent_sample_index}")
+            return _chunk_number
+
+        elif wise_id:
+            _ind = np.where(self.parent_sample.df[self.parent_wise_source_id_key] == int(wise_id))[0]
+            logger.debug(f"wise ID {wise_id} at index {_ind}")
+            _in_masks = [m[_ind] for m in self.dec_interval_masks]
+            _chunk_number = np.where(_in_masks)[0]
+            if len(_chunk_number) > 1:
+                raise Exception
+            _chunk_number = _chunk_number[0]
+            logger.debug(f"chunk number is {_chunk_number} for {wise_id}")
+            return _chunk_number
 
         #########################
         # END CHUNK MASK        #
@@ -209,7 +232,6 @@ class WISEData:
 
         self._no_allwise_source = self.parent_sample.df[self.parent_sample_wise_skysep_key] == np.inf
         if np.any(self._no_allwise_source):
-            # TODO: raise Exception!
             logger.warning(f"{len(self.parent_sample.df[self._no_allwise_source])} of {len(self.parent_sample.df)} "
                            f"entries without match!")
 
@@ -223,8 +245,16 @@ class WISEData:
         _one_to_one = '-F one_to_one=1 ' if one_to_one else ''
         _minsep_arcsec = self.min_sep.to("arcsec").value if minsep_arcsec is None else minsep_arcsec
         _db_name = self.get_db_name(table_name)
-        _id_key = 'cntr' if 'allwise' in _db_name else 'allwise_cntr,cntr'
-        _des = 'designation,' if 'allwise' in _db_name else ''
+
+        if _db_name == "allwise_p3as_mep":
+            _sigpos = _source_id = _des = ""
+            _id_key = "cntr_mf,cntr"
+        else:
+            _sigpos = 'sigra,sigdec,'
+            _source_id = "source_id,"
+            _des = 'designation,' if 'allwise' in _db_name else ''
+            _id_key = 'cntr' if 'allwise' in _db_name else 'allwise_cntr,cntr'
+
         submit_cmd = f'curl ' \
                      f'-o {out_file} ' \
                      f'-F filename=@{in_file} ' \
@@ -233,7 +263,7 @@ class WISEData:
                      f'-F uradius={_minsep_arcsec} ' \
                      f'-F outfmt=1 ' \
                      f'{_one_to_one}' \
-                     f'-F selcols={_des}source_id,ra,dec,sigra,sigdec,{_id_key}{additional_keys} ' \
+                     f'-F selcols={_des}{_source_id}ra,dec,{_sigpos}{_id_key}{additional_keys} ' \
                      f'"https://irsa.ipac.caltech.edu/cgi-bin/Gator/nph-query"'
 
         logger.debug(f'submit command: {submit_cmd}')
@@ -260,10 +290,16 @@ class WISEData:
         # use Gator to query IRSA
         self._run_gator_match(in_filename, out_filename, table_name, **gator_kwargs)
 
-        # load the result file
-        gator_res = Table.read(out_filename, format='ipac')
-        logger.debug(f"found {len(gator_res)} results")
-        return gator_res
+        try:
+            # load the result file
+            gator_res = Table.read(out_filename, format='ipac')
+            logger.debug(f"found {len(gator_res)} results")
+            return gator_res
+
+        except ValueError:
+            with open(out_filename, 'r') as f:
+                err_msg = f.read()
+            raise ValueError(err_msg)
 
     def _match_single_chunk(self, chunk_number, table_name):
         """
@@ -311,7 +347,6 @@ class WISEData:
         return _dupe_mask
 
     def _rematch_duplicates(self, table_name, mask=None):
-        # TODO: find a way to query NeoWISE directly for parent sample sources without match
         if mask is None:
             mask = self._get_dubplicated_wise_id_mask()
 
@@ -365,7 +400,7 @@ class WISEData:
     # START GET PHOTOMETRY DATA       #
     ###################################
 
-    def get_photometric_data(self, tables=None, perc=1, wait=5, service='tap'):
+    def get_photometric_data(self, tables=None, perc=1, wait=5, service='tap', mag=True, flux=False):
         """
         Load photometric data from the IRSA server for the matched sample
         :param tables: list like, WISE tables to use for photometry query, defaults to AllWISE and NOEWISER photometry
@@ -379,35 +414,158 @@ class WISEData:
             ]
 
         if service == 'tap':
-            self._query_for_photometry(tables, perc, wait)
+            self._query_for_photometry(tables, perc, wait, mag, flux)
             self._select_individual_lightcurves_and_bin()
-            self._combine_binned_lcs()
 
         elif service == 'gator':
-            pass
+            self._query_for_photometry_gator(tables, perc, mag, flux)
+            self._select_and_bin_lightcurves_gator()
+
+        self._combine_binned_lcs()
+
+    def _cache_chunk_binned_lightcurves_filename(self, chunk_number):
+        fn = f"binned_lightcurves{self._split_photometry_key}{chunk_number}.json"
+        return os.path.join(self._cache_photometry_dir, fn)
+
+    def _save_chunk_binned_lcs(self, chunk_number, binned_lcs):
+        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number)
+        with open(fn, "w") as f:
+            json.dump(binned_lcs, f)
+
+    def _load_chunk_binned_lcs(self, chunk_number):
+        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number)
+        with open(fn, "r") as f:
+            binned_lcs = json.load(f)
+        return binned_lcs
+
+    def load_binned_lcs(self):
+        with open(self.binned_lightcurves_filename, "r") as f:
+            return json.load(f)
+
+    def _combine_binned_lcs(self):
+        dicts = [self._load_chunk_binned_lcs(c) for c in range(self.n_chunks)]
+        d = dicts[0]
+        for dd in dicts[1:]:
+            d.update(dd)
+
+        fn = self.binned_lightcurves_filename
+        logger.info(f"saving final lightcurves under {fn}")
+        with open(fn, "w") as f:
+            json.dump(d, f)
 
     # ----------------------------------------------------------------------------------- #
     # START using GATOR to get photometry        #
     # ------------------------------------------ #
 
-    def _query_for_photometry_gator(self, tables, perc):
+    def _gator_chunk_photometry_cache_filename(self, table_nice_name, chunk_number,
+                                               additional_neowise_query=False, gator_input=False):
+        table_name = self.get_db_name(table_nice_name)
+        _additional_neowise_query = '_neowise_gator' if additional_neowise_query else ''
+        _gator_input = '_gator_input' if gator_input else ''
+        _ending = '.xml' if gator_input else'.tbl'
+        fn = f"{self._cached_raw_photometry_prefix}_{table_name}{_additional_neowise_query}{_gator_input}" \
+             f"{self._split_photometry_key}{chunk_number}{_ending}"
+        return os.path.join(self._cache_photometry_dir, fn)
+
+    def _thread_query_photometry_gator(self, chunk_number, table_name, perc, mag, flux):
+        _infile = self._gator_chunk_photometry_cache_filename(table_name, chunk_number, gator_input=True)
+        _outfile = self._gator_chunk_photometry_cache_filename(table_name, chunk_number)
+        _nice_name = self.get_db_name(table_name, nice=True)
+        _additional_keys_list = ['mjd']
+        if mag:
+            _additional_keys_list += list(self.photometry_table_keymap[_nice_name]['mag'].keys())
+        if flux:
+            _additional_keys_list += list(self.photometry_table_keymap[_nice_name]['flux'].keys())
+
+        _additional_keys = "," + ",".join(_additional_keys_list)
+        _mask = np.array(self.dec_interval_masks[chunk_number]) & (~self._no_allwise_source)
+
+        if perc < 1:
+            N = len(self.parent_sample.df)
+            n = int(round(N * perc))
+            a = np.zeros(N, dtype=int)
+            a[:n-1] = 1
+            np.random.shuffle(a)
+            a = a.astype(bool)
+            _mask = _mask & a
+
+        res = self._match_to_wise(
+            in_filename=_infile,
+            out_filename=_outfile,
+            mask=_mask,
+            table_name=table_name,
+            one_to_one=False,
+            additional_keys=_additional_keys,
+            minsep_arcsec=4
+        )
+
+        return res
+
+    def _query_for_photometry_gator(self, tables, perc, mag, flux):
         threads = list()
         for t in np.atleast_1d(tables):
-            qstring = self._get_photometry_query_string(t)
-            self.jobs[t] = dict()
             for i, m in enumerate(self.dec_interval_masks):
-                pass
+                _thread = threading.Thread(target=self._thread_query_photometry_gator, args=(i, t, perc, mag, flux))
+                _thread.start()
+                threads.append(_thread)
 
-    def _thread_query_photometry_gator(self):
+        for t in threads:
+            t.join()
 
-        self._run_gator_match(
-            in_file='',
-            out_file='',
-            table_name='',
-            one_to_one=False,
-            minsep_arcsec=self.min_sep.to('arcsec').value,
-            additional_keys=''
-        )
+    def _get_unbinned_lightcurves_gator(self, chunk_number):
+        # load only the files for this chunk
+        fns = [os.path.join(self._cache_photometry_dir, fn)
+               for fn in os.listdir(self._cache_photometry_dir)
+               if (fn.startswith(self._cached_raw_photometry_prefix) and
+                   fn.endswith(f"{self._split_photometry_key}{chunk_number}.tbl"))
+               ]
+
+        logger.debug(f"chunk {chunk_number}: loading {len(fns)} files for chunk {chunk_number}")
+
+        _data = list()
+        for fn in fns:
+            data_table = Table.read(fn, format='ipac').to_pandas()
+
+            t = 'allwise_p3as_mep' if 'allwise' in fn else 'neowiser_p1bs_psd'
+            nice_name = self.get_db_name(t, nice=True)
+            cols = dict(self.photometry_table_keymap[nice_name]['mag'])
+            cols.update(self.photometry_table_keymap[nice_name]['flux'])
+            if 'allwise' in fn:
+                cols['cntr_mf'] = 'allwise_cntr'
+
+            data_table = data_table.rename(columns=cols)
+            _data.append(data_table)
+
+        lightcurves = pd.concat(_data)
+        lightcurves = lightcurves[~lightcurves.allwise_cntr.isna()]
+        return lightcurves
+
+    def _subprocess_select_and_bin_gator(self, chunk_number):
+        binned_lcs = dict()
+        lightcurves = self._get_unbinned_lightcurves_gator(chunk_number)
+        for parent_sample_idx in lightcurves['index_01'].unique():
+            parent_sample_idx_mask = lightcurves['index_01'] == parent_sample_idx
+            selected_data = lightcurves[parent_sample_idx_mask]
+
+            # pos = SkyCoord(selected_data['ra_01'][0], selected_data['dec_01'][0], unit='deg')
+            # allwise_ids = selected_data[~selected_data.allwise_cntr.isna()].allwise_cntr.unique()
+            # allwise_ids_masks = [selected_data.allwise_cntr == aid for aid in allwise_ids]
+            # mean_pos = [
+            #     SkyCoord(np.median(selected_data[m]['ra']), np.median(selected_data[m]['dec']), unit='deg')
+            #      for m in allwise_ids_masks
+            # ]
+            # mean_sep = [pos.separation(mp) for mp in mean_pos]
+
+            lum_keys = [c for c in lightcurves.columns if ("W1" in c) or ("W2" in c)]
+            lightcurve = selected_data[['mjd'] + lum_keys]
+            binned_lc = self.bin_lightcurve(lightcurve)
+            binned_lcs[int(parent_sample_idx)] = binned_lc.to_dict()
+
+        logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
+        self._save_chunk_binned_lcs(chunk_number, binned_lcs)
+
+    def _select_and_bin_lightcurves_gator(self, *args, **kwargs):
+        self._select_individual_lightcurves_and_bin(*args, gator=True, **kwargs)
 
     # ------------------------------------------ #
     # END using GATOR to get photometry          #
@@ -417,7 +575,7 @@ class WISEData:
     # START using TAP to get photometry        #
     # ---------------------------------------- #
 
-    def _get_photometry_query_string(self, table_name):
+    def _get_photometry_query_string(self, table_name, mag, flux):
         """
         Construct a query string to submit to IRSA
         :param table_name: str, table name
@@ -426,8 +584,12 @@ class WISEData:
         logger.debug(f"constructing query for {table_name}")
         db_name = self.get_db_name(table_name)
         nice_name = self.get_db_name(table_name, nice=True)
-        flux_keys = list(self.photometry_table_keymap[nice_name].keys())
-        keys = ['mjd'] + flux_keys
+        lum_keys = list()
+        if mag:
+            lum_keys += list(self.photometry_table_keymap[nice_name]['mag'].keys())
+        if flux:
+            lum_keys += list(self.photometry_table_keymap[nice_name]['flux'].keys())
+        keys = ['mjd'] + lum_keys
         id_key = 'cntr_mf' if 'allwise' in db_name else 'allwise_cntr'
 
         q = 'SELECT \n\t'
@@ -469,10 +631,12 @@ class WISEData:
         lightcurve = _job.fetch_result().to_table().to_pandas()
         fn = self._chunk_photometry_cache_filename(t, i)
         logger.debug(f"{i}th query of {t}: saving under {fn}")
-        lightcurve.rename(columns=self.photometry_table_keymap[t]).to_csv(fn)
+        cols = dict(self.photometry_table_keymap[t]['mag'])
+        cols.update(self.photometry_table_keymap[t]['flux'])
+        lightcurve.rename(columns=cols).to_csv(fn)
         return
 
-    def _query_for_photometry(self, tables, perc, wait):
+    def _query_for_photometry(self, tables, perc, wait, mag, flux):
 
         # only integers can be uploaded
         wise_id = np.array(self.parent_sample.df[self.parent_wise_source_id_key][~self._no_allwise_source]).astype(int)
@@ -486,12 +650,11 @@ class WISEData:
         self.jobs = dict()
         threads = list()
         for t in np.atleast_1d(tables):
-            qstring = self._get_photometry_query_string(t)
+            qstring = self._get_photometry_query_string(t, mag, flux)
             self.jobs[t] = dict()
             for i, m in enumerate(self.dec_interval_masks):
 
                 # if perc is smaller than one select only a subset of wise IDs
-                # TODO: fix!
                 wise_id_sel = wise_id[np.array(m)[~self._no_allwise_source]]
                 if perc < 1:
                     logger.debug(f"Getting {perc:.2f} % of IDs")
@@ -522,33 +685,20 @@ class WISEData:
     #     select individual lightcurves and bin
     # ----------------------------------------------------------------------
 
-    def _select_individual_lightcurves_and_bin(self, ncpu=35):
+    def _select_individual_lightcurves_and_bin(self, ncpu=35, gator=False):
+        mp.set_start_method('spawn')
         logger.info('selecting individual lightcurves and bin ...')
         ncpu = min(self.n_chunks, ncpu)
         logger.debug(f"using {ncpu} CPUs")
         args = list(range(self.n_chunks))
         logger.debug(f"multiprocessing arguments: {args}")
+        fct = self._subprocess_select_and_bin_gator if gator else self._subprocess_select_and_bin
         with mp.Pool(ncpu) as p:
             r = list(tqdm.tqdm(
-                p.imap(self._subprocess_select_and_bin, args), total=self.n_chunks, desc='select and bin'
+                p.imap(fct, args), total=self.n_chunks, desc='select and bin'
             ))
             p.close()
             p.join()
-
-    def _cache_chunk_binned_lightcurves_filename(self, chunk_number):
-        fn = f"binned_lightcurves{self._split_photometry_key}{chunk_number}.json"
-        return os.path.join(self._cache_photometry_dir, fn)
-
-    def _save_chunk_binned_lcs(self, chunk_number, binned_lcs):
-        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number)
-        with open(fn, "w") as f:
-            json.dump(binned_lcs, f)
-
-    def _load_chunk_binned_lcs(self, chunk_number):
-        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number)
-        with open(fn, "r") as f:
-            binned_lcs = json.load(f)
-        return binned_lcs
 
     def _get_unbinned_lightcurves(self, chunk_number):
         # load only the files for this chunk
@@ -570,62 +720,64 @@ class WISEData:
         for ID in unique_id:
             m = lightcurves.wise_id == ID
             lightcurve = lightcurves[m]
-
-    # ----------------------------------------------------------------------
-    #     bin lightcurves
-    # ----------------------------------------------------------------------
-
-            # bin lightcurves in time intervals where observations are closer than 100 days together
-            sorted_mjds = np.sort(lightcurve.mjd)
-            epoch_bounds_mask = (sorted_mjds[1:] - sorted_mjds[:-1]) > 100
-            epoch_bounds = np.array(
-                [lightcurve.mjd.min()] +
-                list(sorted_mjds[1:][epoch_bounds_mask]) +
-                [lightcurve.mjd.max()*1.01]  # this just makes sure that the last datapoint gets selected as well
-            )
-            epoch_intervals = np.array([epoch_bounds[:-1], epoch_bounds[1:]]).T
-
-            binned_lc = pd.DataFrame()
-            for ei in epoch_intervals:
-                r = dict()
-                epoch_mask = (lightcurve.mjd >= ei[0]) & (lightcurve.mjd < ei[1])
-                r['mean_mjd'] = np.median(lightcurve.mjd[epoch_mask])
-
-                for b in self.bands:
-                    f = lightcurve[f"{b}{self.flux_key_ext}"][epoch_mask]
-                    e = lightcurve[f"{b}{self.error_key_ext}"][epoch_mask]
-                    w = e / sum(e)
-                    mean = np.average(f, weights=w)
-                    u_rms = np.sqrt(sum((f - mean) ** 2) / len(f))
-                    u_mes = np.sqrt(sum(e**2 / len(e)))
-                    r[f'{b}_mean_flux'] = mean
-                    r[f'{b}_flux_rms'] = max(u_rms, u_mes)
-
-                binned_lc = binned_lc.append(r, ignore_index=True)
-
+            binned_lc = self.bin_lightcurve(lightcurve)
             binned_lcs[int(ID)] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
         self._save_chunk_binned_lcs(chunk_number, binned_lcs)
 
-    def load_binned_lcs(self):
-        with open(self.binned_lightcurves_filename, "r") as f:
-            return json.load(f)
-
-    def _combine_binned_lcs(self):
-        dicts = [self._load_chunk_binned_lcs(c) for c in range(self.n_chunks)]
-        d = dicts[0]
-        for dd in dicts[1:]:
-            d.update(dd)
-
-        fn = self.binned_lightcurves_filename
-        logger.info(f"saving final lightcurves under {fn}")
-        with open(fn, "w") as f:
-            json.dump(d, f)
-
     # ---------------------------------------- #
     # END using TAP to get photometry          #
     # ----------------------------------------------------------------------------------- #
+
+    # ----------------------------------------------------------------------
+    #     bin lightcurves
+    # ----------------------------------------------------------------------
+    def bin_lightcurve(self, lightcurve):
+        # bin lightcurves in time intervals where observations are closer than 100 days together
+        sorted_mjds = np.sort(lightcurve.mjd)
+        epoch_bounds_mask = (sorted_mjds[1:] - sorted_mjds[:-1]) > 100
+        epoch_bounds = np.array(
+            [lightcurve.mjd.min()] +
+            list(sorted_mjds[1:][epoch_bounds_mask]) +
+            [lightcurve.mjd.max() * 1.01]  # this just makes sure that the last datapoint gets selected as well
+        )
+        epoch_intervals = np.array([epoch_bounds[:-1], epoch_bounds[1:]]).T
+
+        binned_lc = pd.DataFrame()
+        for ei in epoch_intervals:
+            r = dict()
+            epoch_mask = (lightcurve.mjd >= ei[0]) & (lightcurve.mjd < ei[1])
+            r['mean_mjd'] = np.median(lightcurve.mjd[epoch_mask])
+
+            for b in self.bands:
+                for lum_ext in [self.flux_key_ext, self.mag_key_ext]:
+                    try:
+                        f = lightcurve[f"{b}{lum_ext}"][epoch_mask]
+                        e = lightcurve[f"{b}{lum_ext}{self.error_key_ext}"][epoch_mask]
+                        ulims = pd.isna(e)
+                        ul = np.all(pd.isna(e))
+
+                        if ul:
+                            mean = np.mean(f)
+                            u_mes = 0
+                        else:
+                            f = f[~ulims]
+                            e = e[~ulims]
+                            w = e / sum(e)
+                            mean = np.average(f, weights=w)
+                            u_mes = np.sqrt(sum(e ** 2 / len(e)))
+
+                        u_rms = np.sqrt(sum((f - mean) ** 2) / len(f))
+                        r[f'{b}_mean{lum_ext}'] = mean
+                        r[f'{b}{lum_ext}_rms'] = max(u_rms, u_mes)
+                        r[f'{b}{lum_ext}_ul'] = ul
+                    except KeyError:
+                        pass
+
+            binned_lc = binned_lc.append(r, ignore_index=True)
+
+        return binned_lc
 
     #################################
     # END GET PHOTOMETRY DATA       #
@@ -635,21 +787,26 @@ class WISEData:
     # START MAKE PLOTTING FUNCTIONS     #
     #####################################
 
-    def plot_lc(self, wise_id=None, interactive=False, fn=None, ax=None, save=True, plot_unbinned=False,
-                plot_binned=True,
-                **kwargs):
+    def plot_lc(self, parent_sample_idx=None, wise_id=None, interactive=False, fn=None, ax=None, save=True,
+                plot_unbinned=False, plot_binned=True, lum_key='flux', service='tap', **kwargs):
 
         logger.debug(f"loading binned lightcurves")
         lcs = self.load_binned_lcs()
+        unbinned_lc = None
+        _get_unbinned_lcs_fct = self._get_unbinned_lightcurves if service == 'tap' else self._get_unbinned_lightcurves_gator
 
         if wise_id:
             lc = pd.DataFrame.from_dict(lcs[wise_id])
             if plot_unbinned:
-                _chunk_number = self._get_chunk_number(wise_id)
-                unbinned_lcs = self._get_unbinned_lightcurves(_chunk_number)
+                _chunk_number = self._get_chunk_number(wise_id=wise_id)
+                unbinned_lcs = _get_unbinned_lcs_fct(_chunk_number)
                 unbinned_lc = unbinned_lcs[unbinned_lcs.wise_id == int(wise_id)]
         else:
-            raise NotImplementedError
+            lc = pd.DataFrame(lcs[parent_sample_idx])
+            if plot_unbinned:
+                _chunk_number = self._get_chunk_number(parent_sample_index=parent_sample_idx)
+                unbinned_lcs = _get_unbinned_lcs_fct(_chunk_number)
+                unbinned_lc = unbinned_lcs[unbinned_lcs.index_01 == int(parent_sample_idx)]
 
         if not ax:
             fig, ax = plt.subplots(**kwargs)
@@ -657,17 +814,24 @@ class WISEData:
             fig = plt.gcf()
 
         for b in self.bands:
-            if plot_binned:
-                ax.errorbar(lc.mean_mjd, lc[f"{b}_mean_flux"], yerr=lc[f"{b}_flux_rms"],
-                            label=b, ls='', marker='s', c=self.band_plot_colors[b], markersize=4,
-                            markeredgecolor='k', ecolor='k', capsize=2)
-            if plot_unbinned:
-                ax.errorbar(unbinned_lc.mjd, unbinned_lc[f"{b}_flux"], yerr=unbinned_lc[f"{b}_flux_error"],
-                            label=f"{b} unbinned", ls='', marker='o', c=self.band_plot_colors[b], markersize=4,
-                            alpha=0.3)
+            try:
+                if plot_binned:
+                    ax.errorbar(lc.mean_mjd, lc[f"{b}_mean_{lum_key}"], yerr=lc[f"{b}_{lum_key}_rms"],
+                                label=b, ls='', marker='s', c=self.band_plot_colors[b], markersize=4,
+                                markeredgecolor='k', ecolor='k', capsize=2)
+                if plot_unbinned:
+                    ax.errorbar(unbinned_lc.mjd, unbinned_lc[f"{b}_{lum_key}"], yerr=unbinned_lc[f"{b}_{lum_key}_error"],
+                                label=f"{b} unbinned", ls='', marker='o', c=self.band_plot_colors[b], markersize=4,
+                                alpha=0.3)
+            except KeyError as e:
+                logger.warning(e)
+
+        if lum_key == 'mag':
+            ylim = ax.get_ylim()
+            ax.set_ylim([ylim[-1], ylim[0]])
 
         ax.set_xlabel('MJD')
-        ax.set_ylabel('flux')
+        ax.set_ylabel(lum_key)
         ax.legend()
 
         if save:
