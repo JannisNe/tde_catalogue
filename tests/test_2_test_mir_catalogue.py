@@ -167,10 +167,10 @@ class TestMIRFlareCatalogue(unittest.TestCase):
             wise_data.get_photometric_data(service=s, mag=True, flux=True)
             logger.info(f" --- Test plot lightcurves --- ")
             lcs = wise_data.load_binned_lcs(s)
-            plot_id = list(lcs.keys())[10]
+            plot_id = list(lcs.keys())[10].split('_')[0]
             for lumk in ['mag', 'flux']:
                 fn = os.path.join(wise_data.plots_dir, f"{plot_id}.pdf")
-                wise_data.plot_lc(plot_id, plot_unbinned=True, lum_key=lumk, service=s, fn=fn)
+                wise_data.plot_lc(parent_sample_idx=plot_id, plot_unbinned=True, lum_key=lumk, service=s, fn=fn)
 
     @classmethod
     def tearDownClass(cls):
