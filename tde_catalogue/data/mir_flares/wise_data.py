@@ -148,7 +148,7 @@ class WISEData:
                 endpoint=True
             )
             self.dec_intervalls = np.degrees(np.arcsin(np.array([sin_bounds[:-1], sin_bounds[1:]]).T))
-            logger.info(f'Declination intervalls are {self.dec_intervalls}')
+            logger.debug(f'Declination intervalls are {self.dec_intervalls}')
 
             self.dec_interval_masks = list()
             for i, dec_intervall in enumerate(self.dec_intervalls):
@@ -681,12 +681,17 @@ class WISEData:
 
         logger.info('all jobs done!')
 
+        for i, t in enumerate(threads):
+            logger.debug(f"{i}th thread alive: {t.is_alive()}")
+
+        self.jobs = None
+        del threads
+
     # ----------------------------------------------------------------------
     #     select individual lightcurves and bin
     # ----------------------------------------------------------------------
 
     def _select_individual_lightcurves_and_bin(self, ncpu=35, gator=False):
-        mp.set_start_method('spawn')
         logger.info('selecting individual lightcurves and bin ...')
         ncpu = min(self.n_chunks, ncpu)
         logger.debug(f"using {ncpu} CPUs")
@@ -699,6 +704,13 @@ class WISEData:
             ))
             p.close()
             p.join()
+
+        # p = mp.Pool(ncpu)
+        # r = list(tqdm.tqdm(
+        #     p.imap(fct, args), total=self.n_chunks, desc='select and bin'
+        # ))
+        # p.close()
+        # p.join()
 
     def _get_unbinned_lightcurves(self, chunk_number):
         # load only the files for this chunk
