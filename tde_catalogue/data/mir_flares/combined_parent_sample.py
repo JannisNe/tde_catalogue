@@ -33,6 +33,7 @@ class CombinedParentSample(ParentSample):
         self.base_name = base_name
         self.min_sep = min_sep * u.arcsec
         self._store = store
+        self._subsamples = None
 
         # set up directories
         self.cache_dir = os.path.join(cache_dir, base_name)
@@ -50,6 +51,12 @@ class CombinedParentSample(ParentSample):
             self.df = pd.read_csv(self.local_sample_copy)
 
     @property
+    def sub_samples(self):
+        if self._subsamples is None:
+            self._subsamples = [p() for p in np.atleast_1d(self.parent_sample_classes)]
+        return self._subsamples
+
+    @property
     def local_sample_copy(self):
         return os.path.join(self.cache_dir, "sample.csv")
 
@@ -59,7 +66,8 @@ class CombinedParentSample(ParentSample):
         ###################
 
         logger.debug("initialising parent samples")
-        parent_samples = [p() for p in np.atleast_1d(self.parent_sample_classes)]
+        # parent_samples = [p() for p in np.atleast_1d(self.parent_sample_classes)]
+        parent_samples = self.sub_samples
 
         # get the parent sample DataFrames and rename the ra and dec columns
         # so they end up being what is specified in self.default_keymap
@@ -161,8 +169,8 @@ class CombinedParentSample(ParentSample):
 
     def plot_cutout(self, *args, **kwargs):
         res = list()
-        for p in np.atleast_1d(self.parent_sample_classes):
-            inst = p()
+        for inst in np.atleast_1d(self.sub_samples):
+            # inst = p()
             r = inst.plot_cutout(*args, **kwargs)
             if not isinstance(r, type(None)):
                 res.append(r)
