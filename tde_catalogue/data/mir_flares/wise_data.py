@@ -147,7 +147,7 @@ class WISEData:
                 endpoint=True
             )
             self.dec_intervalls = np.degrees(np.arcsin(np.array([sin_bounds[:-1], sin_bounds[1:]]).T))
-            logger.debug(f'Declination intervalls are {self.dec_intervalls}')
+            logger.debug(f'Declination intervalls are \n{self.dec_intervalls}')
 
             self.dec_interval_masks = list()
             for i, dec_intervall in enumerate(self.dec_intervalls):
@@ -225,12 +225,18 @@ class WISEData:
 
         _dupe_mask = self._get_dubplicated_wise_id_mask()
         if np.any(_dupe_mask):
-            self._rematch_duplicates(table_name, _dupe_mask)
+            self._rematch_duplicates(table_name, _dupe_mask, filext="_rematch1")
+
             _inf_mask = ~(self.parent_sample.df[self.parent_sample_wise_skysep_key] < np.inf)
             if np.any(_inf_mask):
                 logger.info(f"Still {len(self.parent_sample.df[_inf_mask])} entries without match."
                             f"Looking in NoeWISE Photometry")
-                self._rematch_duplicates(table_name='NEOWISE-R Single Exposure (L1b) Source Table', mask=_inf_mask)
+                for mi, m in enumerate(self.dec_interval_masks):
+                    _interval_inf_mask = _inf_mask & m
+                    if np.any(_interval_inf_mask):
+                        self._rematch_duplicates(table_name='NEOWISE-R Single Exposure (L1b) Source Table',
+                                                 mask=_interval_inf_mask,
+                                                 filext=f"_rematch2_c{mi}")
 
         self._no_allwise_source = self.parent_sample.df[self.parent_sample_wise_skysep_key] == np.inf
         if np.any(self._no_allwise_source):
@@ -240,7 +246,7 @@ class WISEData:
         if not np.any(self._get_dubplicated_wise_id_mask()):
             self.parent_sample.save_local()
         else:
-            raise Exception
+            logger.warning(self.parent_sample.df[self._get_dubplicated_wise_id_mask()])
 
     def _run_gator_match(self, in_file, out_file, table_name,
                          one_to_one=True, minsep_arcsec=None, additional_keys='', silent=False):
@@ -273,7 +279,8 @@ class WISEData:
         logger.debug(f'submit command: {submit_cmd}')
         process = subprocess.Popen(submit_cmd, stdout=subprocess.PIPE, shell=True)
         out_msg, err_msg = process.communicate()
-        logger.info(out_msg.decode())
+        if out_msg:
+            logger.info(out_msg.decode())
         if err_msg:
             logger.error(err_msg.decode())
 
@@ -344,21 +351,21 @@ class WISEData:
         idf_sorted_sep['duplicate'] = idf_sorted_sep[self.parent_wise_source_id_key].duplicated(keep='first')
         idf_sorted_sep.sort_index(inplace=True)
         _inf_mask = idf_sorted_sep[self.parent_sample_wise_skysep_key] <= np.inf
-        _dupe_mask = idf_sorted_sep['duplicate'] & (~_inf_mask)
+        _dupe_mask = idf_sorted_sep['duplicate'] & (_inf_mask)
         if np.any(_dupe_mask):
             _N_dupe = len(self.parent_sample.df[_dupe_mask])
             logger.info(f"{_N_dupe} duplicated entries in parent sample")
         return _dupe_mask
 
-    def _rematch_duplicates(self, table_name, mask=None):
+    def _rematch_duplicates(self, table_name, mask=None, filext=""):
         if mask is None:
             mask = self._get_dubplicated_wise_id_mask()
 
         for k, default in self.parent_sample_default_entries.items():
             self.parent_sample.df.loc[mask, k] = default
 
-        _dupe_infile = os.path.join(self.cache_dir, f"parent_sample_duplicated.xml")
-        _dupe_output_file = os.path.join(self.cache_dir, f"parent_sample_duplicated.tbl")
+        _dupe_infile = os.path.join(self.cache_dir, f"parent_sample_duplicated{filext}.xml")
+        _dupe_output_file = os.path.join(self.cache_dir, f"parent_sample_duplicated{filext}.tbl")
         _gator_res = self._match_to_wise(
             in_filename=_dupe_infile,
             out_filename=_dupe_output_file,
@@ -389,12 +396,18 @@ class WISEData:
                     __msep = self.parent_sample.df[self.parent_sample_wise_skysep_key][__m] > _skysep
                     if np.any(__msep):
                         columns = ['ra', 'dec', self.parent_sample_wise_skysep_key, self.parent_wise_source_id_key]
-                        raise Exception(
-                            f"WISE ID: {_wise_id} with skysep {_skysep}:\n"
-                            f"{self.parent_sample.df.loc[in_id].to_string()}"
-                            f" \n"
-                            f"{self.parent_sample.df.loc[__m].to_string(columns=columns)}"
-                        )
+                        txt = f"WISE ID: {_wise_id} with skysep {_skysep}:\n" \
+                              f"{self.parent_sample.df.loc[in_id].to_string()}" \
+                              f" \n" \
+                              f"{self.parent_sample.df.loc[__m].to_string(columns=columns)}"
+                        if len(self.parent_sample.df[self.parent_wise_source_id_key][__m][__msep]) == 1:
+                            logger.warning(txt)
+                            self.parent_sample.df.loc[in_id, self.parent_sample_wise_skysep_key] = _skysep
+                            self.parent_sample.df.loc[in_id, self.parent_wise_source_id_key] = _wise_id
+                            for k in [self.parent_wise_source_id_key, self.parent_sample_wise_skysep_key]:
+                                self.parent_sample.df.loc[np.where(__m)[0][__msep], k] = self.parent_sample_default_entries[k]
+                        else:
+                            raise Exception(txt)
 
     ###################################################
     # END MATCH PARENT SAMPLE TO WISE SOURCES         #
@@ -460,7 +473,7 @@ class WISEData:
         fn = self.binned_lightcurves_filename(service)
         logger.info(f"saving final lightcurves under {fn}")
         with open(fn, "w") as f:
-            json.dump(d, f)
+            json.dump(d, f, indent=4)
 
     # ----------------------------------------------------------------------------------- #
     # START using GATOR to get photometry        #
@@ -709,19 +722,27 @@ class WISEData:
         args = list(range(self.n_chunks))
         logger.debug(f"multiprocessing arguments: {args}")
         fct = self._subprocess_select_and_bin_gator if gator else self._subprocess_select_and_bin
-        with mp.Pool(ncpu) as p:
-            r = list(tqdm.tqdm(
-                p.imap(fct, args), total=self.n_chunks, desc='select and bin'
-            ))
-            p.close()
-            p.join()
+        # with mp.Pool(ncpu) as p:
+        #     r = list(tqdm.tqdm(
+        #         p.imap(fct, args), total=self.n_chunks, desc='select and bin'
+        #     ))
+        #     p.close()
+        #     p.join()
+        while True:
+            try:
+                logger.debug(f'trying with {ncpu}')
+                p = mp.Pool(ncpu)
+                break
+            except OSError as e:
+                if ncpu == 1:
+                    raise OSError(e)
+                ncpu = int(round(ncpu - 1))
 
-        # p = mp.Pool(ncpu)
-        # r = list(tqdm.tqdm(
-        #     p.imap(fct, args), total=self.n_chunks, desc='select and bin'
-        # ))
-        # p.close()
-        # p.join()
+        r = list(tqdm.tqdm(
+            p.imap(fct, args), total=self.n_chunks, desc='select and bin'
+        ))
+        p.close()
+        p.join()
 
     def _get_unbinned_lightcurves(self, chunk_number):
         # load only the files for this chunk
@@ -800,7 +821,7 @@ class WISEData:
                         u_rms = np.sqrt(sum((f - mean) ** 2) / len(f))
                         r[f'{b}_mean{lum_ext}'] = mean
                         r[f'{b}{lum_ext}_rms'] = max(u_rms, u_mes)
-                        r[f'{b}{lum_ext}_ul'] = ul
+                        r[f'{b}{lum_ext}_ul'] = bool(ul)
                     except KeyError:
                         pass
 
@@ -824,14 +845,16 @@ class WISEData:
         unbinned_lc = None
         _get_unbinned_lcs_fct = self._get_unbinned_lightcurves if service == 'tap' else self._get_unbinned_lightcurves_gator
 
-        if not wise_id and parent_sample_idx:
+        if not wise_id and (parent_sample_idx is not None):
             wise_id = self.parent_sample.df.loc[int(parent_sample_idx), self.parent_wise_source_id_key]
+            logger.debug(f"{wise_id} for {parent_sample_idx}")
 
-        if wise_id and not parent_sample_idx:
+        if (wise_id is not None) and not parent_sample_idx:
             m = self.parent_sample.df[self.parent_wise_source_id_key] == wise_id
             parent_sample_idx = self.parent_sample.df.index[m]
+            logger.debug(f"{parent_sample_idx} for {wise_id}")
 
-        lc = pd.DataFrame.from_dict(lcs[f"{int(parent_sample_idx)}_{int(wise_id)}"])
+        lc = pd.DataFrame.from_dict(lcs[f"{int(parent_sample_idx)}_{wise_id}"])
 
         if plot_unbinned:
             _chunk_number = self._get_chunk_number(parent_sample_index=parent_sample_idx)
