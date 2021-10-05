@@ -7,6 +7,7 @@ import requests
 from PIL import Image
 from io import BytesIO
 import pandas as pd
+import matplotlib.pyplot as plt
 
 # get the WSID and password if not already defined
 import getpass
@@ -123,6 +124,64 @@ def getgrayim(ra, dec, size=240, output_size=None, filter="g", format="jpg"):
     r = requests.get(url[0])
     im = Image.open(BytesIO(r.content))
     return im
+
+
+def plot_cutout(ra, dec, arcsec, interactive, title=None, fn=None, save=False, ax=None, **kwargs):
+    arcsec_per_px = 0.25
+    ang_px = int(arcsec / arcsec_per_px)
+    ang_deg = arcsec / 3600
+
+    plot_color_image = kwargs.get("plot_color_image", True)
+    height = kwargs.pop('height', 2.5)
+    imshow_kwargs = {
+        'origin': 'upper',
+        "extent": ([ra + ang_deg / 2, ra - ang_deg / 2, dec - ang_deg / 2, dec + ang_deg / 2])
+    }
+    scatter_args = [ra, dec]
+    scatter_kwargs = {'marker': 'x', 'color': 'red'}
+
+    if not plot_color_image:
+        filters = 'grizy'
+        if not ax:
+            fig, axss = plt.subplots(2, len(filters), sharex='all', sharey='all',
+                                     gridspec_kw={'wspace': 0, 'hspace': 0, 'height_ratios': [1, 8]},
+                                     figsize=(height * 5, height))
+        else:
+            fig = plt.gcf()
+            axss = ax
+
+        for j, fil in enumerate(list(filters)):
+            im = getgrayim(ra, dec, size=ang_px, filter=fil)
+            axs = axss[1]
+            axs[j].imshow(im, cmap='gray', **imshow_kwargs)
+
+            axs[j].scatter(*scatter_args, **scatter_kwargs)
+            axs[j].set_title(fil)
+            axss[0][j].axis('off')
+
+    else:
+        logger.debug('plotting color image')
+        if not ax:
+            fig, axss = plt.subplots(figsize=(height, height))
+        else:
+            fig = plt.gcf()
+            axss = ax
+
+        im = getcolorim(ra, dec, size=ang_px)
+        axss.imshow(im, **imshow_kwargs)
+        axss.scatter(*scatter_args, **scatter_kwargs)
+
+    _this_title = title if title else f"{ra}_{dec}"
+    axss.set_title(_this_title)
+
+    if save:
+        logger.info(f'saving under {fn}')
+        fig.savefig(fn)
+
+    if interactive:
+        return fig, axss
+
+    plt.close()
 
 
 def mastQuery(request):

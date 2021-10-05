@@ -15,22 +15,42 @@ def get_skyserver_token():
     return os.getenv("SKYSERVER_TOKEN")
 
 
-def plot_cutout(ra, dec, arcsec=20, arcsec_per_px=1, interactive=False, fn=None):
+def plot_cutout(ra, dec, arcsec=20, arcsec_per_px=0.1, interactive=False, fn=None, title=None, save=False, ax=False,
+                height=2.5):
+
     ang_px = int(arcsec / arcsec_per_px)
     ang_deg = arcsec / 3600
 
-    im = SkyServer.getJpegImgCutout(ra, dec, scale=arcsec_per_px, height=ang_px, width=ang_px)
+    if not ax:
+        fig, ax = plt.subplots(figsize=(height, height))
+    else:
+        fig = plt.gcf()
 
-    fig, ax = plt.subplots()
-    ax.imshow(im, origin='upper',
-              extent=([ra + ang_deg / 2, ra - ang_deg / 2,
-                       dec - ang_deg / 2, dec + ang_deg / 2]),
-              cmap='gray')
+    try:
+        im = SkyServer.getJpegImgCutout(ra, dec, scale=arcsec_per_px, height=ang_px, width=ang_px)
+        ax.imshow(im, origin='upper',
+                  extent=([ra + ang_deg / 2, ra - ang_deg / 2,
+                           dec - ang_deg / 2, dec + ang_deg / 2]),
+                  cmap='gray')
+        ax.scatter(ra, dec, marker='x', color='red')
 
-    ax.scatter(ra, dec, marker='x', color='red')
+    except Exception as e:
+        if "outside the SDSS footprint" in str(e):
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
+            x = sum(xlim) / 2
+            y = sum(ylim) / 2
+            ax.annotate("Outside SDSS Footprint", (x, y), color='red', ha='center', va='center', fontsize=20)
+        else:
+            raise Exception(e)
+
+    if title:
+        ax.set_title(title)
+
+    if save:
+        fig.savefig(fn)
 
     if interactive:
         return fig, ax
-    else:
-        fig.savefig(fn)
-        plt.close()
+
+    plt.close()

@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from tde_catalogue import main_logger, cache_dir, plots_dir
-from tde_catalogue.utils.panstarrs_utils import getgrayim
+from tde_catalogue.utils.panstarrs_utils import getgrayim, getcolorim, plot_cutout
 from tde_catalogue.data.mir_flares import base_name as mir_base_name
 from tde_catalogue.data.mir_flares.parent_sample import ParentSample
 
@@ -21,7 +21,8 @@ class PanstarrsParentSample(ParentSample):
 
     default_keymap = {
         'dec': 'decMean',
-        'ra': 'raMean'
+        'ra': 'raMean',
+        'id': 'objName'
     }
 
     def __init__(self,
@@ -30,6 +31,8 @@ class PanstarrsParentSample(ParentSample):
                  ps_score_threshold=ps_score_threshold,
                  minDetections=minDetections,
                  store=True):
+
+        super(PanstarrsParentSample, self).__init__(base_name=base_name)
 
         self.base_name = base_name
         self.MAST_table_name = MAST_table_name
@@ -41,13 +44,13 @@ class PanstarrsParentSample(ParentSample):
         self.mastcasjob = mastcasjobs.MastCasJobs(context="PanSTARRS_DR2")
         self.job_id = None
 
-        # set up directories
-        self.cache_dir = os.path.join(cache_dir, base_name)
-        self.plots_dir = os.path.join(plots_dir, base_name)
-
-        for d in [self.cache_dir, self.plots_dir]:
-            if not os.path.isdir(d):
-                os.makedirs(d)
+        # # set up directories
+        # self.cache_dir = os.path.join(cache_dir, base_name)
+        # self.plots_dir = os.path.join(plots_dir, base_name)
+        #
+        # for d in [self.cache_dir, self.plots_dir]:
+        #     if not os.path.isdir(d):
+        #         os.makedirs(d)
 
         #######################################################################################
         # START make MAST query #
@@ -133,50 +136,68 @@ class PanstarrsParentSample(ParentSample):
         fig.savefig(filename)
         plt.close()
 
-    def plot_cutout(self, ind, arcsec=20, interactive=False, **kwargs):
-        """
-        Plot the coutout images in all filters around the position of object with index i
-        """
-
-        ou = list()
-
-        for i in np.atleast_1d(ind):
-
-            r = self.df.iloc[i]
-            arcsec_per_px = 0.25
-            ang_px = int(arcsec / arcsec_per_px)
-            ang_deg = arcsec / 3600
-
-            filters = 'grizy'
-            height = kwargs.pop('height', 2.5)
-            fig, axss = plt.subplots(2, len(filters), sharex='all', sharey='all',
-                                     gridspec_kw={'wspace': 0, 'hspace': 0, 'height_ratios': [1, 8]},
-                                     figsize=(height * 5, height))
-            for j, fil in enumerate(list(filters)):
-                im = getgrayim(r.raMean, r.decMean, size=ang_px, filter=fil)
-                axs = axss[1]
-                axs[j].imshow(im, origin='upper',
-                              extent=([r.raMean + ang_deg/2, r.raMean - ang_deg/2,
-                                       r.decMean - ang_deg/2, r.decMean + ang_deg/2]),
-                              cmap='gray')
-
-                axs[j].scatter(r.raMean, r.decMean, marker='x', color='red')
-                axs[j].set_title(fil)
-                axss[0][j].axis('off')
-
-            fig.suptitle(r.objName)
-
-            if interactive:
-                ou.append([fig, axss])
-
-            else:
-                filename = os.path.join(self.plots_dir, f'{i}_{r.objName}.pdf')
-                logger.info(f'saving under {filename}')
-                fig.savefig(filename)
-                plt.close()
-
-        if interactive:
-            return ou
+    def _plot_cutout(self, ra, dec, arcsec, interactive, title=None, fn=None, **kwargs):
+        _this_title = title if title else f"{ra}_{dec}"
+        _this_fn = fn if fn else _this_title
+        _filename = os.path.join(self.plots_dir, f'{_this_fn}.pdf')
+        return plot_cutout(ra, dec, arcsec=arcsec, interactive=interactive,
+                           fn=_filename, title=_this_title, **kwargs)
+        # arcsec_per_px = 0.25
+        # ang_px = int(arcsec / arcsec_per_px)
+        # ang_deg = arcsec / 3600
+        #
+        # plot_color_image = kwargs.get("plot_color_image", True)
+        # height = kwargs.pop('height', 2.5)
+        # imshow_kwargs = {
+        #     'origin': 'upper',
+        #     "extent": ([ra + ang_deg / 2, ra - ang_deg / 2, dec - ang_deg / 2, dec + ang_deg / 2])
+        # }
+        # scatter_args = [ra, dec]
+        # scatter_kwargs = {'marker': 'x', 'color': 'red'}
+        #
+        # if not plot_color_image:
+        #     filters = 'grizy'
+        #     if not ax:
+        #         fig, axss = plt.subplots(2, len(filters), sharex='all', sharey='all',
+        #                                  gridspec_kw={'wspace': 0, 'hspace': 0, 'height_ratios': [1, 8]},
+        #                                  figsize=(height * 5, height))
+        #     else:
+        #         fig = plt.gcf()
+        #         axss = ax
+        #
+        #     for j, fil in enumerate(list(filters)):
+        #         im = getgrayim(ra, dec, size=ang_px, filter=fil)
+        #         axs = axss[1]
+        #         axs[j].imshow(im, cmap='gray', **imshow_kwargs)
+        #
+        #         axs[j].scatter(*scatter_args, **scatter_kwargs)
+        #         axs[j].set_title(fil)
+        #         axss[0][j].axis('off')
+        #
+        # else:
+        #     logger.debug('plotting color image')
+        #     if not ax:
+        #         fig, axss = plt.subplots(figsize=(height, height))
+        #     else:
+        #         fig = plt.gcf()
+        #         axss = ax
+        #
+        #     im = getcolorim(ra, dec, size=ang_px)
+        #     axss.imshow(im, **imshow_kwargs)
+        #     axss.scatter(*scatter_args, **scatter_kwargs)
+        #
+        # _this_title = title if title else f"{ra}_{dec}"
+        # fig.suptitle(_this_title)
+        #
+        # if save:
+        #     _this_fn = fn if fn else _this_title
+        #     filename = os.path.join(self.plots_dir, f'{_this_fn}.pdf')
+        #     logger.info(f'saving under {filename}')
+        #     fig.savefig(filename)
+        #     plt.close()
+        #
+        # if interactive:
+        #     return fig, axss
 
     ####################################
     # END make some plotting functions #

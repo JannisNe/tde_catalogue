@@ -1,6 +1,7 @@
 import os, argparse, logging, requests
 import pandas as pd
 from SciServer import CasJobs, Authentication
+import numpy as np
 
 from tde_catalogue import main_logger, cache_dir, plots_dir
 from tde_catalogue.data.mir_flares import base_name as mir_base_name
@@ -17,12 +18,17 @@ class SDSSParentSample(ParentSample):
     casjobs_table_name = "spectroscopic_galaxies"
     default_keymap = {
         'ra': 'ra',
-        'dec': 'dec'
+        'dec': 'dec',
+        'id': 'bestObjID'
     }
 
     def __init__(self,
                  base_name=base_name,
-                 store=True):
+                 store=True,
+                 submit_context='DR16',
+                 download_context='MyDB'):
+
+        super(SDSSParentSample, self).__init__(base_name=base_name)
 
         uid, pw = get_sdss_credentials()
         logger.debug(f"logging in with {uid}")
@@ -30,14 +36,16 @@ class SDSSParentSample(ParentSample):
 
         self.base_name = base_name
         self._store = store
+        self.submit_context = submit_context
+        self.download_context = download_context
 
-        # set up directories
-        self.cache_dir = os.path.join(cache_dir, base_name)
-        self.plots_dir = os.path.join(plots_dir, base_name)
-
-        for d in [self.cache_dir, self.plots_dir]:
-            if not os.path.isdir(d):
-                os.makedirs(d)
+        # # set up directories
+        # self.cache_dir = os.path.join(cache_dir, base_name)
+        # self.plots_dir = os.path.join(plots_dir, base_name)
+        #
+        # for d in [self.cache_dir, self.plots_dir]:
+        #     if not os.path.isdir(d):
+        #         os.makedirs(d)
 
         #######################################################################################
         # START make CASJOBS query #
@@ -45,20 +53,20 @@ class SDSSParentSample(ParentSample):
 
         if (not os.path.isfile(self.local_sample_copy)) or (not self._store):
             # If there is no local copy, get the table from CasJobs
-            logger.info('No local copy of Panstarrs query result. Getting info from CasJobs')
+            logger.info('No local copy of SDSS query result. Getting info from CasJobs')
 
             if not self._table_in_casjobs:
                 # If the query result is not on CasJobs, do the query
                 logger.info('Querying SDSS-CASJOBS')
                 logger.debug(f'Query: {self.query}')
-                self.job_id = jobId = CasJobs.submitJob(sql=self.query, context="DR16")
+                self.job_id = jobId = CasJobs.submitJob(sql=self.query, context=self.submit_context)
                 logger.debug(f'Job {self.job_id}')
                 v = logger.getEffectiveLevel() <= logging.DEBUG
                 jobDescription = CasJobs.waitForJob(jobId=jobId, verbose=v)
                 logger.debug(jobDescription["Message"])
 
             logger.debug('loading table from CASJOBS')
-            self.df = CasJobs.getPandasDataFrameFromQuery(self._download_query, context='MyDB')
+            self.df = CasJobs.getPandasDataFrameFromQuery(self._download_query, context=self.download_context)
             logger.info(f'got {len(self.df)} objects')
 
             if self._store:
@@ -91,7 +99,7 @@ class SDSSParentSample(ParentSample):
         FROM
             specObj
         INTO
-            MyDB.{self.casjobs_table_name}
+            {self.download_context}.{self.casjobs_table_name}
         WHERE
             class = 'GALAXY'
         """
@@ -105,13 +113,8 @@ class SDSSParentSample(ParentSample):
         """
         return q
 
-    def plot_cutout(self, ind, **kwargs):
-        ra, dec, id = float(self.df.ra[ind]), float(self.df.dec[ind]), str(self.df.bestObjID[ind])
-        interactive = kwargs.get('interactive')
-        if not interactive:
-            kwargs['fn'] = os.path.join(self.plots_dir, f"{ind}_{id}.pdf")
-            logger.info(f"saving under {kwargs['fn']}")
-        return plot_cutout(ra, dec, **kwargs)
+    def _plot_cutout(self, ra, dec, arcsec, interactive, **kwargs):
+        return plot_cutout(ra, dec, arcsec=arcsec, interactive=interactive, **kwargs)
 
 
 if __name__ == '__main__':

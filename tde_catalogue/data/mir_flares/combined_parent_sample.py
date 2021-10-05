@@ -19,11 +19,13 @@ class CombinedParentSample(ParentSample):
     base_name = f"{mir_base_name}/combined_sample"
     default_keymap = {
         'ra': 'ra',
-        'dec': 'dec'
+        'dec': 'dec',
+        'id': 'name'
     }
 
-    def __init__(self, parent_sample_classes=None, min_sep=20,
-                 base_name=base_name, store=True):
+    def __init__(self, parent_sample_classes=None, min_sep=20, base_name=base_name, store=True):
+
+        super().__init__(base_name)
 
         if parent_sample_classes is None:
             parent_sample_classes = [SDSSParentSample, PanstarrsParentSample]
@@ -35,13 +37,13 @@ class CombinedParentSample(ParentSample):
         self._store = store
         self._subsamples = None
 
-        # set up directories
-        self.cache_dir = os.path.join(cache_dir, base_name)
-        self.plots_dir = os.path.join(plots_dir, base_name)
-
-        for d in [self.cache_dir, self.plots_dir]:
-            if not os.path.isdir(d):
-                os.makedirs(d)
+        # # set up directories
+        # self.cache_dir = os.path.join(cache_dir, base_name)
+        # self.plots_dir = os.path.join(plots_dir, base_name)
+        #
+        # for d in [self.cache_dir, self.plots_dir]:
+        #     if not os.path.isdir(d):
+        #         os.makedirs(d)
 
         if (not os.path.isfile(self.local_sample_copy)) or (not self._store):
             self._combine_samples()
@@ -144,15 +146,31 @@ class CombinedParentSample(ParentSample):
         # ensure that the length is correct
         if not len(combined_cat) == combined_cat_len:
             raise Exception
-        # set ra and dec column
+        # set ra, dec and name column
         for k, v in self.default_keymap.items():
-            # use the values from the small cat where possible
-            small_cat_k = f"{parent_samples[sorted_length[0]].base_name}_{v}"
-            combined_cat[v] = combined_cat[small_cat_k]
-            # where values are missing insert from big cat
-            big_cat_k = f"{parent_samples[sorted_length[1]].base_name}_{v}"
-            missing_values_m = combined_cat[v].isna()
-            combined_cat.loc[missing_values_m, v] = combined_cat[big_cat_k][missing_values_m]
+
+            if k in ["ra", "dec"]:
+                # use the values from the small cat where possible
+                small_cat_k = f"{parent_samples[sorted_length[0]].base_name}_{v}"
+                combined_cat[v] = combined_cat[small_cat_k]
+                # where values are missing insert from big cat
+                big_cat_k = f"{parent_samples[sorted_length[1]].base_name}_{v}"
+                missing_values_m = combined_cat[v].isna()
+                combined_cat.loc[missing_values_m, v] = combined_cat[big_cat_k][missing_values_m]
+
+            else:
+                logger.debug(combined_cat.columns)
+                small_cat_ids = combined_cat[
+                    f"{parent_samples[sorted_length[0]].base_name}_" 
+                    f"{self.default_keymap['id']}"
+                ].apply(lambda x: str(x))
+
+                big_cat_ids = combined_cat[
+                    f"{parent_samples[sorted_length[1]].base_name}_" 
+                    f"{self.default_keymap['id']}"
+                ].apply(lambda x: str(x))
+
+                combined_cat[v] = small_cat_ids + '_' + big_cat_ids
 
         self.df = combined_cat
 
@@ -167,11 +185,11 @@ class CombinedParentSample(ParentSample):
             logger.debug(f'saving to {self.local_sample_copy}')
             self.df.to_csv(self.local_sample_copy)
 
-    def plot_cutout(self, *args, **kwargs):
+    def _plot_cutout(self, ra, dec, arcsec, interactive, **kwargs):
         res = list()
         for inst in np.atleast_1d(self.sub_samples):
             # inst = p()
-            r = inst.plot_cutout(*args, **kwargs)
+            r = inst._plot_cutout(ra, dec, arcsec, interactive, **kwargs)
             if not isinstance(r, type(None)):
                 res.append(r)
         if len(res) > 0:
