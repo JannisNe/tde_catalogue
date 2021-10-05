@@ -219,7 +219,7 @@ class WISEData:
     # START MATCH PARENT SAMPLE TO WISE SOURCES         #
     #####################################################
 
-    def match_all_chunks(self, table_name="AllWISE Source Catalog"):
+    def match_all_chunks(self, table_name="AllWISE Source Catalog", rematch_to_neowise=False):
         for i in range(len(self.dec_intervalls)):
             self._match_single_chunk(i, table_name)
 
@@ -228,7 +228,7 @@ class WISEData:
             self._rematch_duplicates(table_name, _dupe_mask, filext="_rematch1")
 
             _inf_mask = ~(self.parent_sample.df[self.parent_sample_wise_skysep_key] < np.inf)
-            if np.any(_inf_mask):
+            if np.any(_inf_mask) and rematch_to_neowise:
                 logger.info(f"Still {len(self.parent_sample.df[_inf_mask])} entries without match."
                             f"Looking in NoeWISE Photometry")
                 for mi, m in enumerate(self.dec_interval_masks):
