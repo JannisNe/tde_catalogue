@@ -350,7 +350,7 @@ class WISEData:
         idf_sorted_sep = self.parent_sample.df.sort_values(self.parent_sample_wise_skysep_key)
         idf_sorted_sep['duplicate'] = idf_sorted_sep[self.parent_wise_source_id_key].duplicated(keep='first')
         idf_sorted_sep.sort_index(inplace=True)
-        _inf_mask = idf_sorted_sep[self.parent_sample_wise_skysep_key] <= np.inf
+        _inf_mask = idf_sorted_sep[self.parent_sample_wise_skysep_key] < np.inf
         _dupe_mask = idf_sorted_sep['duplicate'] & (_inf_mask)
         if np.any(_dupe_mask):
             _N_dupe = len(self.parent_sample.df[_dupe_mask])
