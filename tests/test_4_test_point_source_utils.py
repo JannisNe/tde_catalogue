@@ -17,5 +17,5 @@ class TestPointSourceUtils(unittest.TestCase):
 
     def test_point_source_wise_data(self):
         logger.info("\n\n Testing Point Source Utils \n")
-        wd = get_point_source_wise_data(base_name, test_ra, test_dec)
+        wd = get_point_source_wise_data(base_name, test_ra, test_dec, service='gator')
         wd.parent_sample.plot_cutout(parent_sample_idx='0')
