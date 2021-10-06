@@ -741,11 +741,14 @@ class WISEData:
                     raise OSError(e)
                 ncpu = int(round(ncpu - 1))
 
-        r = list(tqdm.tqdm(
-            p.imap(fct, args), total=self.n_chunks, desc='select and bin'
-        ))
-        p.close()
-        p.join()
+        if ncpu > 1:
+            r = list(tqdm.tqdm(
+                p.imap(fct, args), total=self.n_chunks, desc='select and bin'
+            ))
+            p.close()
+            p.join()
+        else:
+            r = map(fct, args)
 
     def _get_unbinned_lightcurves(self, chunk_number):
         # load only the files for this chunk
