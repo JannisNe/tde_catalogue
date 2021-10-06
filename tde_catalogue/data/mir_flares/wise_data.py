@@ -748,7 +748,7 @@ class WISEData:
             p.close()
             p.join()
         else:
-            r = map(fct, args)
+            r = list(map(fct, args))
 
     def _get_unbinned_lightcurves(self, chunk_number):
         # load only the files for this chunk
