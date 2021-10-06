@@ -249,11 +249,12 @@ class WISEData:
             logger.warning(self.parent_sample.df[self._get_dubplicated_wise_id_mask()])
 
     def _run_gator_match(self, in_file, out_file, table_name,
-                         one_to_one=True, minsep_arcsec=None, additional_keys='', silent=False):
+                         one_to_one=True, minsep_arcsec=None, additional_keys='', silent=False, constraints=None):
         _one_to_one = '-F one_to_one=1 ' if one_to_one else ''
         _minsep_arcsec = self.min_sep.to("arcsec").value if minsep_arcsec is None else minsep_arcsec
         _db_name = self.get_db_name(table_name)
         _silent = "-s " if silent else ""
+        _constraints = '-F constraints="' + " and ".join(constraints).replace('%', '%%') + '" ' if constraints else ""
 
         if _db_name == "allwise_p3as_mep":
             _sigpos = _source_id = _des = ""
@@ -273,6 +274,7 @@ class WISEData:
                      f'-F uradius={_minsep_arcsec} ' \
                      f'-F outfmt=1 ' \
                      f'{_one_to_one}' \
+                     f'{_constraints}' \
                      f'-F selcols={_des}{_source_id}ra,dec,{_sigpos}{_id_key}{additional_keys} ' \
                      f'"https://irsa.ipac.caltech.edu/cgi-bin/Gator/nph-query"'
 
@@ -519,7 +521,8 @@ class WISEData:
             one_to_one=False,
             additional_keys=_additional_keys,
             minsep_arcsec=4,
-            silent=True
+            silent=True,
+            constraints=self.constraints
         )
 
         return res
@@ -640,7 +643,7 @@ class WISEData:
         logger.info(f"Waiting on {i}th query of {t} ........")
         _job = self.jobs[t][i]
         # Sometimes a connection Error occurs.
-        # In that case try again as long as job.wait() exits normally
+        # In that case try again until job.wait() exits normally
         while True:
             try:
                 _job.wait()
