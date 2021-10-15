@@ -466,11 +466,18 @@ class WISEData:
     # START GET PHOTOMETRY DATA       #
     ###################################
 
-    def get_photometric_data(self, tables=None, perc=1, wait=5, service='tap', mag=True, flux=False, nthreads=100):
+    def get_photometric_data(self, tables=None, perc=1, wait=5, service='tap', mag=True, flux=False, nthreads=100,
+                             use_cluster=False):
         """
         Load photometric data from the IRSA server for the matched sample
         :param tables: list like, WISE tables to use for photometry query, defaults to AllWISE and NOEWISER photometry
         :param perc: float, percentage of sources to load photometry for, default 1
+        :param use_cluster: bool, submits to DESY clusetr if True
+        :param nthreads: int, max number of threads to launch
+        :param flux: bool, get flux values if True
+        :param mag: bool, gets magnitude values if True
+        :param service: str, either of 'gator' or 'tap'
+        :param wait: float, time in hours to wait after submiting TAP jobs
         """
 
         if tables is None:
@@ -485,11 +492,17 @@ class WISEData:
 
         if service == 'tap':
             self._query_for_photometry(tables, perc, wait, mag, flux, nthreads)
-            self._select_individual_lightcurves_and_bin()
+            if use_cluster:
+                self.submit_to_cluster(1, "00:29:59", 15, tables, service)
+            else:
+                self._select_individual_lightcurves_and_bin()
 
         elif service == 'gator':
-            self._query_for_photometry_gator(tables, perc, mag, flux, nthreads)
-            self._select_and_bin_lightcurves_gator()
+            if use_cluster:
+                self.submit_to_cluster(1, "00:29:59", 15, tables, service)
+            else:
+                self._query_for_photometry_gator(tables, perc, mag, flux, nthreads)
+                self._select_and_bin_lightcurves_gator()
 
         self._combine_binned_lcs(service)
 
@@ -1004,7 +1017,7 @@ class WISEData:
         else:
             logger.info(f'No Job ID!')
 
-    def _make_cluster_script(self, cluster_cpu, cluster_ram, tables):
+    def _make_cluster_script(self, cluster_h, cluster_ram, tables, service):
         script_fn = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'download_and_bin_single_chunk.py')
         tables = np.atleast_1d(tables)
         tables = [self.get_db_name(t, nice=False) for t in tables]
@@ -1017,12 +1030,12 @@ class WISEData:
                "#$ -S /bin/zsh \n" \
                "## \n" \
                "##(the running time for this job) \n" \
-              f"#$ -l h_cpu={cluster_cpu} \n" \
+              f"#$ -l h_cpu={cluster_h} \n" \
                "#$ -l h_rss=" + str(cluster_ram) + "\n" \
                "## \n" \
                "## \n" \
                "##(send mail on job's abort) \n" \
-               "#$ -m a \n" \
+               "#$ -m aeb \n" \
                "## \n" \
                "##(stderr and stdout are merged together to stdout) \n" \
                "#$ -j y \n" \
@@ -1031,7 +1044,7 @@ class WISEData:
                "## -N TDE Catalogue download \n" \
                "## \n" \
                "##(redirect output to:) \n" \
-               "#$ -o /dev/null \n" \
+               f"#$ -o {self.cluster_log_dir} \n" \
                "## \n" \
                "sleep $(( ( RANDOM % 60 )  + 1 )) \n" \
                'exec > "$TMPDIR"/${JOB_ID}_stdout.txt ' \
@@ -1039,13 +1052,15 @@ class WISEData:
               f'source {BASHFILE} \n' \
               f'export CASJOBS_PW={casjobs_pw} \n' \
                'tde_catalogue \n' \
+               'export O=1 \n' \
               f'python {script_fn} ' \
                f'--logging_level DEBUG ' \
                f'--base_name {self.base_name} ' \
                f'--min_sep_arcsec {self.min_sep.to("arcsec").value} ' \
                f'--n_chunks {self._n_chunks} ' \
+               f'--service {service} ' \
                f'--parentsample_class_pickle $1 ' \
-               f'--chunk_number $SGE_TASK_ID ' \
+               f'--chunk_number $((SGE_TASK_ID-O)) ' \
                f'--tables {tables_str} \n' \
                'cp $TMPDIR/${JOB_ID}_stdout.txt ' + self.cluster_log_dir + '\n' \
                'cp $TMPDIR/${JOB_ID}_stderr.txt ' + self.cluster_log_dir + '\n '
@@ -1059,7 +1074,7 @@ class WISEData:
         cmd = "chmod +x " + self.submit_file
         os.system(cmd)
 
-    def submit_to_cluster(self, cluster_cpu, cluster_ram, tables):
+    def submit_to_cluster(self, cluster_cpu, cluster_h, cluster_ram, tables, service):
 
         parentsample_class_pickle = os.path.join(self.cluster_dir, 'parentsample_class.pkl')
         logger.debug(f"pickling parent sample class to {parentsample_class_pickle}")
@@ -1068,17 +1083,18 @@ class WISEData:
 
         submit_cmd = 'qsub '
         if cluster_cpu > 1:
-            submit_cmd += " -pe multicore {0} -R y ".format(cluster_cpu)
-        submit_cmd += f"-t 0-{self.n_chunks}:1 {self.submit_file} {parentsample_class_pickle}"
+            submit_cmd += "-pe multicore {0} -R y ".format(cluster_cpu)
+        submit_cmd += f'-N wise_lightcurves '
+        submit_cmd += f"-t 1-{self.n_chunks+1}:1 {self.submit_file} {parentsample_class_pickle}"
         logger.debug(f"Ram per core: {cluster_ram}")
         logger.info(f"{time.asctime(time.localtime())}: {submit_cmd}")
 
-        self._make_cluster_script(cluster_cpu, cluster_ram, tables)
+        self._make_cluster_script(cluster_h, cluster_ram, tables, service)
 
-        process = subprocess.Popen(submit_cmd, stdout=subprocess.PIPE, shell=True)
-        msg = process.stdout.read().decode()
-        logger.info(str(msg))
-        self.job_id = int(str(msg).split('job-array')[1].split('.')[0])
+        # process = subprocess.Popen(submit_cmd, stdout=subprocess.PIPE, shell=True)
+        # msg = process.stdout.read().decode()
+        # logger.info(str(msg))
+        # self.job_id = int(str(msg).split('job-array')[1].split('.')[0])
 
     # ---------------------------------------------------- #
     # END using cluster for downloading and binning        #
