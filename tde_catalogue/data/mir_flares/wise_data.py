@@ -1,4 +1,4 @@
-import os, subprocess, copy, json, argparse, tqdm, time, threading
+import os, subprocess, copy, json, argparse, tqdm, time, threading, queue, pickle
 import multiprocessing as mp
 import pandas as pd
 import numpy as np
@@ -7,7 +7,7 @@ import astropy.units as u
 from astropy.table import Table
 import matplotlib.pyplot as plt
 
-from tde_catalogue import main_logger, cache_dir, plots_dir, output_dir
+from tde_catalogue import main_logger, cache_dir, plots_dir, output_dir, BASHFILE
 from tde_catalogue.data.mir_flares import base_name as mir_base_name
 from tde_catalogue.data.mir_flares.combined_parent_sample import CombinedParentSample
 
@@ -76,7 +76,7 @@ class WISEData:
 
     def __init__(self,
                  min_sep_arcsec=10,
-                 n_chunks=8,
+                 n_chunks=200,
                  base_name=base_name,
                  parent_sample_class=CombinedParentSample):
         """
@@ -91,10 +91,11 @@ class WISEData:
         # START SET-UP          #
         #########################
 
+        self.parent_sample_class = parent_sample_class
         parent_sample = parent_sample_class() if parent_sample_class else None
         self.base_name = base_name
         self.min_sep = min_sep_arcsec * u.arcsec
-        self.n_chunks = n_chunks
+        self._n_chunks = n_chunks
 
         # set up parent sample keys
         self.parent_ra_key = parent_sample.default_keymap['ra'] if parent_sample else None
@@ -109,19 +110,25 @@ class WISEData:
         # set up directories
         self.cache_dir = os.path.join(cache_dir, base_name)
         self._cache_photometry_dir = os.path.join(self.cache_dir, "photometry")
+        self.cluster_dir = os.path.join(self.cache_dir, 'cluster')
+        self.cluster_log_dir = os.path.join(self.cluster_dir, 'logs')
         self.output_dir = os.path.join(output_dir, base_name)
         self.lightcurve_dir = os.path.join(self.output_dir, "lightcurves")
         self.plots_dir = os.path.join(plots_dir, base_name)
 
-        for d in [self.cache_dir, self._cache_photometry_dir, self.output_dir, self.lightcurve_dir, self.plots_dir]:
+        for d in [self.cache_dir, self._cache_photometry_dir, self.cluster_dir, self.cluster_log_dir,
+                  self.output_dir, self.lightcurve_dir, self.plots_dir]:
             if not os.path.isdir(d):
                 os.makedirs(d)
+
+        self.submit_file = os.path.join(self.cluster_dir, 'submit.txt')
 
         # set up result attributes
         self._split_photometry_key = '__chunk'
         self._cached_raw_photometry_prefix = 'raw_photometry'
         self.jobs = None
-        self._no_allwise_source = None
+        self.queue = queue.Queue()
+        self.clear_unbinned_photometry_when_binning = False
 
         #########################
         # END SET-UP            #
@@ -132,63 +139,76 @@ class WISEData:
         #########################
 
         self.parent_sample = parent_sample
+        if parent_sample:
+            self._no_allwise_source = self.parent_sample.df[self.parent_sample_wise_skysep_key] == np.inf
+        else:
+            self._no_allwise_source = None
+
+        # self.dec_intervalls = None
+        # self.dec_interval_masks = None
+        self.chunk_map = None
+        self.n_chunks = self._n_chunks
+
+    @property
+    def n_chunks(self):
+        return self._n_chunks
+
+    @n_chunks.setter
+    def n_chunks(self, value):
+        """Sets the private variable _n_chunks and re-calculates the declination interval masks"""
+        self._n_chunks = value
+
         if self.parent_sample:
 
-            min_dec = min(self.parent_sample.df[self.parent_dec_key])
-            max_dec = max(self.parent_sample.df[self.parent_dec_key])
-            logger.info(f'Declination: ({min_dec}, {max_dec})')
-            for k, default in self.parent_sample_default_entries.items():
-                self.parent_sample.df[k] = default
+            self.chunk_map = np.zeros(len(self.parent_sample.df))
+            N_in_chunk = int(round(len(self.chunk_map) / self._n_chunks))
+            for i in range(self._n_chunks):
+                start_ind = i * N_in_chunk
+                end_ind = start_ind + N_in_chunk
+                self.chunk_map[start_ind:end_ind] = i
 
-            sin_bounds = np.linspace(
-                np.sin(np.radians(min_dec * (1 - np.sign(min_dec) * 1e-6))),
-                np.sin(np.radians(max_dec)),
-                n_chunks+1,
-                endpoint=True
-            )
-            self.dec_intervalls = np.degrees(np.arcsin(np.array([sin_bounds[:-1], sin_bounds[1:]]).T))
-            logger.debug(f'Declination intervalls are \n{self.dec_intervalls}')
-
-            self.dec_interval_masks = list()
-            for i, dec_intervall in enumerate(self.dec_intervalls):
-                dec_intervall_mask = (self.parent_sample.df[self.parent_dec_key] > min(dec_intervall)) & \
-                                     (self.parent_sample.df[self.parent_dec_key] <= max(dec_intervall))
-                if not np.any(dec_intervall_mask):
-                    logger.warning(f"No objects selected in chunk {i}!")
-                self.dec_interval_masks.append(dec_intervall_mask)
-
-            _is_not_selected = sum(self.dec_interval_masks) != 1
-            if np.any(_is_not_selected):
-                raise ValueError(f"{len(self.dec_interval_masks[0][_is_not_selected])} objects not selected!"
-                                 f"Index: {np.where(_is_not_selected)[0]}")
+            # min_dec = min(self.parent_sample.df[self.parent_dec_key])
+            # max_dec = max(self.parent_sample.df[self.parent_dec_key])
+            # logger.info(f'Declination: ({min_dec}, {max_dec})')
+            # for k, default in self.parent_sample_default_entries.items():
+            #     self.parent_sample.df[k] = default
+            #
+            # sin_bounds = np.linspace(
+            #     np.sin(np.radians(min_dec * (1 - np.sign(min_dec) * 1e-6))),
+            #     np.sin(np.radians(max_dec)),
+            #     self._n_chunks + 1,
+            #     endpoint=True
+            # )
+            # self.dec_intervalls = np.degrees(np.arcsin(np.array([sin_bounds[:-1], sin_bounds[1:]]).T))
+            # logger.debug(f'Declination intervalls are \n{self.dec_intervalls}')
+            #
+            # self.dec_interval_masks = list()
+            # for i, dec_intervall in enumerate(self.dec_intervalls):
+            #     dec_intervall_mask = (self.parent_sample.df[self.parent_dec_key] > min(dec_intervall)) & \
+            #                          (self.parent_sample.df[self.parent_dec_key] <= max(dec_intervall))
+            #     if not np.any(dec_intervall_mask):
+            #         logger.warning(f"No objects selected in chunk {i}!")
+            #     self.dec_interval_masks.append(dec_intervall_mask)
+            #
+            # _is_not_selected = sum(self.dec_interval_masks) != 1
+            # if np.any(_is_not_selected):
+            #     raise ValueError(f"{len(self.dec_interval_masks[0][_is_not_selected])} objects not selected!"
+            #                      f"Index: {np.where(_is_not_selected)[0]}")
 
         else:
-            logger.warning("No parent sample given!")
+            logger.warning("No parent sample given! Can not calculate dec interval masks!")
 
     def _get_chunk_number(self, wise_id=None, parent_sample_index=None):
         if (not wise_id) and (not parent_sample_index):
             raise Exception
 
-        if parent_sample_index:
-            indexes = [self.parent_sample.df[m].index for m in self.dec_interval_masks]
-            _in_indexes = [int(parent_sample_index) in idx for idx in indexes]
-            _chunk_number = np.where(_in_indexes)[0]
-            if len(_chunk_number) > 1:
-                raise Exception
-            _chunk_number = _chunk_number[0]
-            logger.debug(f"chunk number is {_chunk_number} for {parent_sample_index}")
-            return _chunk_number
+        if wise_id:
+            parent_sample_index = np.where(self.parent_sample.df[self.parent_wise_source_id_key] == int(wise_id))[0]
+            logger.debug(f"wise ID {wise_id} at index {parent_sample_index}")
 
-        elif wise_id:
-            _ind = np.where(self.parent_sample.df[self.parent_wise_source_id_key] == int(wise_id))[0]
-            logger.debug(f"wise ID {wise_id} at index {_ind}")
-            _in_masks = [m[_ind] for m in self.dec_interval_masks]
-            _chunk_number = np.where(_in_masks)[0]
-            if len(_chunk_number) > 1:
-                raise Exception
-            _chunk_number = _chunk_number[0]
-            logger.debug(f"chunk number is {_chunk_number} for {wise_id}")
-            return _chunk_number
+        _chunk_number = self.chunk_map[parent_sample_index]
+        logger.debug(f"chunk number is {_chunk_number} for {parent_sample_index}")
+        return _chunk_number
 
         #########################
         # END CHUNK MASK        #
@@ -219,19 +239,20 @@ class WISEData:
     # START MATCH PARENT SAMPLE TO WISE SOURCES         #
     #####################################################
 
-    def match_all_chunks(self, table_name="AllWISE Source Catalog", rematch_to_neowise=False):
-        for i in range(len(self.dec_intervalls)):
+    def match_all_chunks(self, table_name="AllWISE Source Catalog", rematch=False, rematch_to_neowise=False, save_when_done=True):
+        for i in range(self.n_chunks):
             self._match_single_chunk(i, table_name)
 
         _dupe_mask = self._get_dubplicated_wise_id_mask()
-        if np.any(_dupe_mask):
+        if np.any(_dupe_mask) and rematch:
             self._rematch_duplicates(table_name, _dupe_mask, filext="_rematch1")
 
             _inf_mask = ~(self.parent_sample.df[self.parent_sample_wise_skysep_key] < np.inf)
             if np.any(_inf_mask) and rematch_to_neowise:
                 logger.info(f"Still {len(self.parent_sample.df[_inf_mask])} entries without match."
                             f"Looking in NoeWISE Photometry")
-                for mi, m in enumerate(self.dec_interval_masks):
+                for mi in range(self.n_chunks):
+                    m = self.chunk_map == mi
                     _interval_inf_mask = _inf_mask & m
                     if np.any(_interval_inf_mask):
                         self._rematch_duplicates(table_name='NEOWISE-R Single Exposure (L1b) Source Table',
@@ -243,10 +264,11 @@ class WISEData:
             logger.warning(f"{len(self.parent_sample.df[self._no_allwise_source])} of {len(self.parent_sample.df)} "
                            f"entries without match!")
 
-        if not np.any(self._get_dubplicated_wise_id_mask()):
-            self.parent_sample.save_local()
-        else:
+        if np.any(self._get_dubplicated_wise_id_mask()):
             logger.warning(self.parent_sample.df[self._get_dubplicated_wise_id_mask()])
+
+        if save_when_done:
+            self.parent_sample.save_local()
 
     def _run_gator_match(self, in_file, out_file, table_name,
                          one_to_one=True, minsep_arcsec=None, additional_keys='', silent=False, constraints=None):
@@ -266,6 +288,8 @@ class WISEData:
             _id_key = 'cntr' if 'allwise' in _db_name else 'allwise_cntr,cntr'
 
         submit_cmd = f'curl ' \
+                     f'--connect-timeout 3600 ' \
+                     f'--max-time 3600 ' \
                      f'{_silent}' \
                      f'-o {out_file} ' \
                      f'-F filename=@{in_file} ' \
@@ -279,14 +303,31 @@ class WISEData:
                      f'"https://irsa.ipac.caltech.edu/cgi-bin/Gator/nph-query"'
 
         logger.debug(f'submit command: {submit_cmd}')
-        process = subprocess.Popen(submit_cmd, stdout=subprocess.PIPE, shell=True)
+        N_tries = 10
+        while True:
+            try:
+                process = subprocess.Popen(submit_cmd, stdout=subprocess.PIPE, shell=True)
+                break
+            except OSError as e:
+                if N_tries < 1:
+                    raise OSError(e)
+                logger.warning(f"{e}, retry")
+                N_tries -= 1
+
         out_msg, err_msg = process.communicate()
         if out_msg:
             logger.info(out_msg.decode())
         if err_msg:
             logger.error(err_msg.decode())
 
-    def _match_to_wise(self, in_filename, out_filename, mask, table_name, **gator_kwargs):
+        if os.path.isfile(out_file):
+            return 1
+        else:
+            return 0
+
+    def _match_to_wise(self, in_filename, out_filename, mask, table_name,
+                       # remove_when_done=True,
+                       N_retries=10, **gator_kwargs):
         selected_parent_sample = copy.copy(
             self.parent_sample.df.loc[mask, [self.parent_ra_key, self.parent_dec_key]])
         selected_parent_sample.rename(columns={self.parent_dec_key: 'dec',
@@ -299,20 +340,36 @@ class WISEData:
         logger.debug(f"writing {len(_selected_parent_sample_astrotab)} "
                      f"objects to {in_filename}")
         _selected_parent_sample_astrotab.write(in_filename, format='ipac', overwrite=True)
+        _done = False
 
-        # use Gator to query IRSA
-        self._run_gator_match(in_filename, out_filename, table_name, **gator_kwargs)
+        while True:
+            if N_retries == 0:
+                raise RuntimeError('Failed with retries')
 
-        try:
-            # load the result file
-            gator_res = Table.read(out_filename, format='ipac')
-            logger.debug(f"found {len(gator_res)} results")
-            return gator_res
+            try:
+                # use Gator to query IRSA
+                success = self._run_gator_match(in_filename, out_filename, table_name, **gator_kwargs)
 
-        except ValueError:
-            with open(out_filename, 'r') as f:
-                err_msg = f.read()
-            raise ValueError(err_msg)
+                if not success:
+                    # if not successful try again
+                    logger.warning("no success, try again")
+                    continue
+
+                # load the result file
+                gator_res = Table.read(out_filename, format='ipac')
+                logger.debug(f"found {len(gator_res)} results")
+                return gator_res
+
+            except ValueError:
+                # this will happen if the gator match returns an output containing the error message
+                # read and display error message, then try again
+                with open(out_filename, 'r') as f:
+                    err_msg = f.read()
+                logger.warning(err_msg)
+
+            finally:
+                N_retries -= 1
+
 
     def _match_single_chunk(self, chunk_number, table_name):
         """
@@ -321,7 +378,7 @@ class WISEData:
         :param table_name: str, optional, WISE table to match to, default is AllWISE Source Catalog
         """
 
-        dec_intervall_mask = self.dec_interval_masks[chunk_number]
+        dec_intervall_mask = self.chunk_map == chunk_number
         logger.debug(f"Any selected: {np.any(dec_intervall_mask)}")
         _parent_sample_declination_band_file = os.path.join(self.cache_dir, f"parent_sample_chunk{chunk_number}.xml")
         _output_file = os.path.join(self.cache_dir, f"parent_sample_chunk{chunk_number}.tbl")
@@ -331,6 +388,13 @@ class WISEData:
             mask=dec_intervall_mask,
             table_name=table_name
         )
+
+        for fn in [_parent_sample_declination_band_file, _output_file]:
+            try:
+                logger.debug(f"removing {fn}")
+                os.remove(fn)
+            except FileNotFoundError:
+                logger.warning(f"No File!!")
 
         # insert the corresponding separation to the WISE source into the parent sample
         self.parent_sample.df.loc[
@@ -419,7 +483,7 @@ class WISEData:
     # START GET PHOTOMETRY DATA       #
     ###################################
 
-    def get_photometric_data(self, tables=None, perc=1, wait=5, service='tap', mag=True, flux=False):
+    def get_photometric_data(self, tables=None, perc=1, wait=5, service='tap', mag=True, flux=False, nthreads=100):
         """
         Load photometric data from the IRSA server for the matched sample
         :param tables: list like, WISE tables to use for photometry query, defaults to AllWISE and NOEWISER photometry
@@ -432,12 +496,16 @@ class WISEData:
                 'NEOWISE-R Single Exposure (L1b) Source Table'
             ]
 
+        logger.debug(f"Getting {perc * 100:.2f}% of lightcurves via {service} "
+                     f"in {'magnitude' if mag else ''} {'flux' if flux else ''} "
+                     f"from {tables}")
+
         if service == 'tap':
             self._query_for_photometry(tables, perc, wait, mag, flux)
             self._select_individual_lightcurves_and_bin()
 
         elif service == 'gator':
-            self._query_for_photometry_gator(tables, perc, mag, flux)
+            self._query_for_photometry_gator(tables, perc, mag, flux, nthreads)
             self._select_and_bin_lightcurves_gator()
 
         self._combine_binned_lcs(service)
@@ -502,7 +570,8 @@ class WISEData:
             _additional_keys_list += list(self.photometry_table_keymap[_nice_name]['flux'].keys())
 
         _additional_keys = "," + ",".join(_additional_keys_list)
-        _mask = np.array(self.dec_interval_masks[chunk_number]) & (~self._no_allwise_source)
+        _deci_mask = self.chunk_map == chunk_number
+        _mask = _deci_mask & (~self._no_allwise_source)
 
         if perc < 1:
             N = len(self.parent_sample.df)
@@ -521,24 +590,35 @@ class WISEData:
             one_to_one=False,
             additional_keys=_additional_keys,
             minsep_arcsec=4,
-            silent=True,
+            silent=False,
             constraints=self.constraints
         )
 
+        os.remove(_infile)
         return res
 
-    def _query_for_photometry_gator(self, tables, perc, mag, flux):
-        threads = list()
+    def _gator_photometry_worker_thread(self):
+        while True:
+            args = self.queue.get()
+            logger.debug(f"{args}")
+            self._thread_query_photometry_gator(*args)
+            self.queue.task_done()
+            logger.info(f"{self.queue.qsize()} tasks remaining")
+
+    def _query_for_photometry_gator(self, tables, perc, mag, flux, nthreads):
+        logger.debug(f'starting {nthreads} workers')
+        threads = [threading.Thread(target=self._gator_photometry_worker_thread, daemon=True) for _ in range(nthreads)]
         for t in np.atleast_1d(tables):
-            for i, m in enumerate(self.dec_interval_masks):
-                _thread = threading.Thread(target=self._thread_query_photometry_gator, args=(i, t, perc, mag, flux))
-                _thread.start()
-                threads.append(_thread)
+            for i in range(self.n_chunks):
+                self.queue.put([i, t, perc, mag, flux])
 
+        logger.info(f"added {self.queue.qsize()} tasks to queue")
         for t in threads:
-            t.join()
+            t.start()
+        self.queue.join()
+        self.queue = None
 
-    def _get_unbinned_lightcurves_gator(self, chunk_number):
+    def _get_unbinned_lightcurves_gator(self, chunk_number, clear=False):
         # load only the files for this chunk
         fns = [os.path.join(self._cache_photometry_dir, fn)
                for fn in os.listdir(self._cache_photometry_dir)
@@ -562,13 +642,17 @@ class WISEData:
             data_table = data_table.rename(columns=cols)
             _data.append(data_table)
 
+            if clear:
+                os.remove(fn)
+
         lightcurves = pd.concat(_data)
         lightcurves = lightcurves[~lightcurves.allwise_cntr.isna()]
         return lightcurves
 
     def _subprocess_select_and_bin_gator(self, chunk_number):
         binned_lcs = dict()
-        lightcurves = self._get_unbinned_lightcurves_gator(chunk_number)
+        lightcurves = self._get_unbinned_lightcurves_gator(chunk_number,
+                                                           clear=self.clear_unbinned_photometry_when_binning)
         for parent_sample_idx in lightcurves['index_01'].unique():
             parent_sample_idx_mask = lightcurves['index_01'] == parent_sample_idx
             selected_data = lightcurves[parent_sample_idx_mask]
@@ -679,8 +763,9 @@ class WISEData:
         for t in np.atleast_1d(tables):
             qstring = self._get_photometry_query_string(t, mag, flux)
             self.jobs[t] = dict()
-            for i, m in enumerate(self.dec_interval_masks):
+            for i in range(self.n_chunks):
 
+                m = self.chunk_map == i
                 # if perc is smaller than one select only a subset of wise IDs
                 wise_id_sel = wise_id[np.array(m)[~self._no_allwise_source]]
                 if perc < 1:
@@ -737,8 +822,9 @@ class WISEData:
                 p = mp.Pool(ncpu)
                 break
             except OSError as e:
+                logger.warning(e)
                 if ncpu == 1:
-                    raise OSError(e)
+                    break
                 ncpu = int(round(ncpu - 1))
 
         if ncpu > 1:
@@ -750,7 +836,7 @@ class WISEData:
         else:
             r = list(map(fct, args))
 
-    def _get_unbinned_lightcurves(self, chunk_number):
+    def _get_unbinned_lightcurves(self, chunk_number, clear=False):
         # load only the files for this chunk
         fns = [os.path.join(self._cache_photometry_dir, fn)
                for fn in os.listdir(self._cache_photometry_dir)
@@ -759,10 +845,15 @@ class WISEData:
             ))]
         logger.debug(f"chunk {chunk_number}: loading {len(fns)} files for chunk {chunk_number}")
         lightcurves = pd.concat([pd.read_csv(fn) for fn in fns])
+
+        if clear:
+            for fn in fns:
+                os.remove(fn)
+
         return lightcurves
 
     def _subprocess_select_and_bin(self, chunk_number):
-        lightcurves = self._get_unbinned_lightcurves(chunk_number)
+        lightcurves = self._get_unbinned_lightcurves(chunk_number, clear=self.clear_unbinned_photometry_when_binning)
         # run through the ids and bin the lightcurves
         unique_id = lightcurves.wise_id.unique()
         logger.debug(f"chunk {chunk_number}: going through {len(unique_id)} IDs")
@@ -834,6 +925,88 @@ class WISEData:
             binned_lc = binned_lc.append(r, ignore_index=True)
 
         return binned_lc
+
+    # ----------------------------------------------------------------------------------- #
+    # START using cluster for downloading and binning      #
+    # ---------------------------------------------------- #
+
+    def submit_to_cluster(self, cluster_cpu, cluster_ram, tables):
+
+        parentsample_class_pickle = os.path.join(self.cluster_dir, 'parentsample_class.pkl')
+        logger.debug(f"pickling parent sample class to {parentsample_class_pickle}")
+        with open(parentsample_class_pickle, "wb") as f:
+            pickle.dump(self.parent_sample_class, f)
+
+        submit_cmd = 'qsub '
+        if cluster_cpu > 1:
+            submit_cmd += " -pe multicore {0} -R y ".format(cluster_cpu)
+        submit_cmd += f"-t 0-{self.n_chunks}:1 {self.submit_file} {parentsample_class_pickle}"
+        logger.debug(f"Ram per core: {cluster_ram}")
+        logger.info(f"{time.asctime(time.localtime())}: {submit_cmd}")
+
+        self._make_cluster_script(cluster_cpu, cluster_ram, tables)
+
+        process = subprocess.Popen(submit_cmd, stdout=subprocess.PIPE, shell=True)
+        msg = process.stdout.read().decode()
+        logger.info(str(msg))
+        self.job_id = int(str(msg).split('job-array')[1].split('.')[0])
+
+    def _make_cluster_script(self, cluster_cpu, cluster_ram, tables):
+        script_fn = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'download_and_bin_single_chunk.py')
+        tables = np.atleast_1d(tables)
+        tables = [self.get_db_name(t, nice=False) for t in tables]
+        tables_str = ' '.join(tables)
+
+        text = "#!/bin/zsh \n" \
+               "## \n" \
+               "##(otherwise the default shell would be used) \n" \
+               "#$ -S /bin/zsh \n" \
+               "## \n" \
+               "##(the running time for this job) \n" \
+              f"#$ -l h_cpu={cluster_cpu} \n" \
+               "#$ -l h_rss=" + str(cluster_ram) + "\n" \
+               "## \n" \
+               "## \n" \
+               "##(send mail on job's abort) \n" \
+               "#$ -m a \n" \
+               "## \n" \
+               "##(stderr and stdout are merged together to stdout) \n" \
+               "#$ -j y \n" \
+               "## \n" \
+               "## name of the job \n" \
+               "## -N TDE Catalogue download \n" \
+               "## \n" \
+               "##(redirect output to:) \n" \
+               "#$ -o /dev/null \n" \
+               "## \n" \
+               "sleep $(( ( RANDOM % 60 )  + 1 )) \n" \
+               'exec > "$TMPDIR"/${JOB_ID}_stdout.txt ' \
+               '2>"$TMPDIR"/${JOB_ID}_stderr.txt \n' \
+              f'source {BASHFILE} \n' \
+               'tde_catalogue \n' \
+              f'python {script_fn} ' \
+               f'--logging_level DEBUG ' \
+               f'--base_name {self.base_name} ' \
+               f'--min_sep_arcsec {self.min_sep.to("arcsec").value} ' \
+               f'--n_chunks {self._n_chunks} ' \
+               f'--parentsample_class_pickle $1 ' \
+               f'--chunk_number $SGE_TASK_ID ' \
+               f'--tables {tables_str} \n' \
+               'cp $TMPDIR/${JOB_ID}_stdout.txt ' + self.cluster_log_dir + '\n' \
+               'cp $TMPDIR/${JOB_ID}_stderr.txt ' + self.cluster_log_dir + '\n '
+
+        logger.debug(f"Submit file: \n {text}")
+        logger.debug(f"Creating file at {self.submit_file}")
+
+        with open(self.submit_file, "w") as f:
+            f.write(text)
+
+        cmd = "chmod +x " + self.submit_file
+        os.system(cmd)
+
+    # ---------------------------------------------------- #
+    # END using cluster for downloading and binning        #
+    # ----------------------------------------------------------------------------------- #
 
     #################################
     # END GET PHOTOMETRY DATA       #
