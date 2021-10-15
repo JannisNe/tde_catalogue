@@ -108,15 +108,16 @@ class WISEData:
         }
 
         self.parent_sample = parent_sample
-        if parent_sample:
-            self._no_allwise_source = self.parent_sample.df[self.parent_sample_wise_skysep_key] == np.inf
-        else:
-            self._no_allwise_source = None
 
         if self.parent_sample:
             for k, default in self.parent_sample_default_entries.items():
                 if k not in parent_sample.df.columns:
                     self.parent_sample.df[k] = default
+
+            self._no_allwise_source = self.parent_sample.df[self.parent_sample_wise_skysep_key] == np.inf
+
+        else:
+            self._no_allwise_source = None
         # --------------------------- ^^^^ set up parent sample ^^^^ --------------------------- #
 
         # set up directories
@@ -962,6 +963,7 @@ class WISEData:
         tables = np.atleast_1d(tables)
         tables = [self.get_db_name(t, nice=False) for t in tables]
         tables_str = ' '.join(tables)
+        casjobs_pw = os.environ['CASJOBS_PW']
 
         text = "#!/bin/zsh \n" \
                "## \n" \
@@ -989,6 +991,7 @@ class WISEData:
                'exec > "$TMPDIR"/${JOB_ID}_stdout.txt ' \
                '2>"$TMPDIR"/${JOB_ID}_stderr.txt \n' \
               f'source {BASHFILE} \n' \
+              f'export CASJOBS_PW={casjobs_pw} \n' \
                'tde_catalogue \n' \
               f'python {script_fn} ' \
                f'--logging_level DEBUG ' \
