@@ -213,7 +213,7 @@ class WISEData:
             parent_sample_index = np.where(self.parent_sample.df[self.parent_wise_source_id_key] == int(wise_id))[0]
             logger.debug(f"wise ID {wise_id} at index {parent_sample_index}")
 
-        _chunk_number = self.chunk_map[int(parent_sample_index)]
+        _chunk_number = int(self.chunk_map[int(parent_sample_index)])
         logger.debug(f"chunk number is {_chunk_number} for {parent_sample_index}")
         return _chunk_number
 
