@@ -9,6 +9,8 @@ stream_handler.setFormatter(logger_format)
 main_logger.addHandler(stream_handler)
 logger = main_logger.getChild(__name__)
 
+# finding the file that contains the setup function tde_catalogue
+BASHFILE = os.getenv('TDE_CATALOGUE_BASHFILE', os.path.expanduser('~/.bashrc'))
 
 # Setting up data directory
 DATA_DIR_KEY = 'TDE_CATALOGUE_DATA'
