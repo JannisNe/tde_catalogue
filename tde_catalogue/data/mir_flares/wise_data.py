@@ -149,6 +149,11 @@ class WISEData:
         self.chunk_map = None
         self.n_chunks = self._n_chunks
 
+        if parent_sample:
+            for k, default in self.parent_sample_default_entries.items():
+                if k not in parent_sample.df.columns:
+                    self.parent_sample.df[k] = default
+
     @property
     def n_chunks(self):
         return self._n_chunks
