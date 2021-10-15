@@ -97,7 +97,7 @@ class WISEData:
         self.min_sep = min_sep_arcsec * u.arcsec
         self._n_chunks = n_chunks
 
-        # set up parent sample keys
+        # --------------------------- vvvv set up parent sample vvvv --------------------------- #
         self.parent_ra_key = parent_sample.default_keymap['ra'] if parent_sample else None
         self.parent_dec_key = parent_sample.default_keymap['dec'] if parent_sample else None
         self.parent_wise_source_id_key = 'AllWISE_id'
@@ -106,6 +106,18 @@ class WISEData:
             self.parent_wise_source_id_key: "",
             self.parent_sample_wise_skysep_key: np.inf
         }
+
+        self.parent_sample = parent_sample
+        if parent_sample:
+            self._no_allwise_source = self.parent_sample.df[self.parent_sample_wise_skysep_key] == np.inf
+        else:
+            self._no_allwise_source = None
+
+        if self.parent_sample:
+            for k, default in self.parent_sample_default_entries.items():
+                if k not in parent_sample.df.columns:
+                    self.parent_sample.df[k] = default
+        # --------------------------- ^^^^ set up parent sample ^^^^ --------------------------- #
 
         # set up directories
         self.cache_dir = os.path.join(cache_dir, base_name)
@@ -138,21 +150,10 @@ class WISEData:
         # START CHUNK MASK      #
         #########################
 
-        self.parent_sample = parent_sample
-        if parent_sample:
-            self._no_allwise_source = self.parent_sample.df[self.parent_sample_wise_skysep_key] == np.inf
-        else:
-            self._no_allwise_source = None
-
         # self.dec_intervalls = None
         # self.dec_interval_masks = None
         self.chunk_map = None
         self.n_chunks = self._n_chunks
-
-        if parent_sample:
-            for k, default in self.parent_sample_default_entries.items():
-                if k not in parent_sample.df.columns:
-                    self.parent_sample.df[k] = default
 
     @property
     def n_chunks(self):
