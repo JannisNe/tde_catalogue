@@ -1,4 +1,4 @@
-import os, subprocess, copy, json, argparse, tqdm, time, threading, queue, pickle, getpass
+import os, subprocess, copy, json, argparse, tqdm, time, threading, queue, pickle, getpass, requests
 import multiprocessing as mp
 import pandas as pd
 import numpy as np
@@ -727,12 +727,16 @@ class WISEData:
         upload_table = Table({'wise_id': wise_id_sel})
         qstring = self._get_photometry_query_string(t, mag, flux)
 
-        job = WISEData.service.submit_job(qstring, uploads={'ids': upload_table})
-        job.run()
-        logger.info(f'submitted job for {t} for chunk {i}: ')
-        logger.debug(f'Job: {job.url}; {job.phase}')
-        self.tap_jobs[t][i] = job
-        self.queue.put((t, i))
+        try:
+            job = WISEData.service.submit_job(qstring, uploads={'ids': upload_table})
+            job.run()
+            logger.info(f'submitted job for {t} for chunk {i}: ')
+            logger.debug(f'Job: {job.url}; {job.phase}')
+            self.tap_jobs[t][i] = job
+            self.queue.put((t, i))
+        except requests.exceptions.ConnectionError as e:
+            logger.warning(f"{chunk_number}th query of {table_name}: Could not submit TAP job!\n"
+                           f"{e}")
 
     def _chunk_photometry_cache_filename(self, table_nice_name, chunk_number, additional_neowise_query=False):
         table_name = self.get_db_name(table_nice_name)
