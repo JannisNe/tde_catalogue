@@ -169,6 +169,11 @@ class WISEData:
     @n_chunks.setter
     def n_chunks(self, value):
         """Sets the private variable _n_chunks and re-calculates the declination interval masks"""
+
+        if value > 50:
+            logger.warning(f"Very large number of chunks ({value})! "
+                           f"Pay attention when getting photometry to not kill IRSA!")
+
         self._n_chunks = value
 
         if self.parent_sample:
@@ -467,18 +472,19 @@ class WISEData:
     # START GET PHOTOMETRY DATA       #
     ###################################
 
-    def get_photometric_data(self, tables=None, perc=1, wait=5, service='tap', mag=True, flux=False, nthreads=100,
-                             use_cluster=False):
+    def get_photometric_data(self, tables=None, perc=1, wait=5, service=None, mag=True, flux=False, nthreads=100,
+                             use_cluster=False, chunks=None):
         """
         Load photometric data from the IRSA server for the matched sample
         :param tables: list like, WISE tables to use for photometry query, defaults to AllWISE and NOEWISER photometry
         :param perc: float, percentage of sources to load photometry for, default 1
-        :param use_cluster: bool, submits to DESY clusetr if True
+        :param use_cluster: bool, submits to DESY cluster if True
         :param nthreads: int, max number of threads to launch
         :param flux: bool, get flux values if True
         :param mag: bool, gets magnitude values if True
-        :param service: str, either of 'gator' or 'tap'
-        :param wait: float, time in hours to wait after submiting TAP jobs
+        :param service: str, either of 'gator' or 'tap', selects base on elements per chunk by default
+        :param wait: float, time in hours to wait after submitting TAP jobs
+        :param chunks: list-like, containing indices of chunks to download
         """
 
         if tables is None:
@@ -486,7 +492,13 @@ class WISEData:
                 'AllWISE Multiepoch Photometry Table',
                 'NEOWISE-R Single Exposure (L1b) Source Table'
             ]
-        chunks = list(range(round(int(self.n_chunks * perc))))
+
+        if chunks is None:
+            chunks = list(range(round(int(self.n_chunks * perc))))
+
+        if service is None:
+            elements_per_chunk = len(self.parent_sample.df) / self.n_chunks
+            service = 'tap' if elements_per_chunk > 300 else 'gator'
 
         logger.debug(f"Getting {perc * 100:.2f}% of lightcurve chunks ({len(chunks)}) via {service} "
                      f"in {'magnitude' if mag else ''} {'flux' if flux else ''} "
@@ -1090,11 +1102,6 @@ class WISEData:
         logger.info(f"{time.asctime(time.localtime())}: {submit_cmd}")
 
         self._make_cluster_script(cluster_h, cluster_ram, tables, service)
-
-        # process = subprocess.Popen(submit_cmd, stdout=subprocess.PIPE, shell=True)
-        # msg = process.stdout.read().decode()
-        # logger.info(str(msg))
-        # self.job_id = int(str(msg).split('job-array')[1].split('.')[0])
 
     # ---------------------------------------------------- #
     # END using cluster for downloading and binning        #
