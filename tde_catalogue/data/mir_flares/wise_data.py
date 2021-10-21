@@ -839,6 +839,7 @@ class WISEData:
         logger.info(f"wait for {wait} hours to give tap_jobs some time")
         time.sleep(wait * 3600)
         self._run_tap_worker_threads(nthreads)
+        self.queue = None
 
     # ----------------------------------------------------------------------
     #     select individual lightcurves and bin
