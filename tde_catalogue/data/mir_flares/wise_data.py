@@ -81,7 +81,7 @@ class WISEData:
 
     def __init__(self,
                  min_sep_arcsec=10,
-                 n_chunks=200,
+                 n_chunks=30,
                  base_name=base_name,
                  parent_sample_class=CombinedParentSample):
         """
@@ -178,6 +178,7 @@ class WISEData:
             for i in range(self._n_chunks):
                 start_ind = i * N_in_chunk
                 end_ind = start_ind + N_in_chunk
+                self.chunk_map[start_ind:end_ind] = int(i)
 
         else:
             logger.warning("No parent sample given! Can not calculate dec interval masks!")
@@ -349,7 +350,7 @@ class WISEData:
                 # read and display error message, then try again
                 with open(out_filename, 'r') as f:
                     err_msg = f.read()
-                logger.warning(err_msg)
+                logger.warning(f"{err_msg}: try again")
 
             finally:
                 N_retries -= 1
@@ -485,25 +486,25 @@ class WISEData:
                 'AllWISE Multiepoch Photometry Table',
                 'NEOWISE-R Single Exposure (L1b) Source Table'
             ]
+        chunks = list(range(round(int(self.n_chunks * perc))))
 
-        logger.debug(f"Getting {perc * 100:.2f}% of lightcurves via {service} "
+        logger.debug(f"Getting {perc * 100:.2f}% of lightcurve chunks ({len(chunks)}) via {service} "
                      f"in {'magnitude' if mag else ''} {'flux' if flux else ''} "
                      f"from {tables}")
 
         if service == 'tap':
-            self._query_for_photometry(tables, perc, wait, mag, flux, nthreads)
+            self._query_for_photometry(tables, chunks, wait, mag, flux, nthreads)
             if use_cluster:
                 self.submit_to_cluster(1, "00:29:59", 15, tables, service)
-            else:
-                self._select_individual_lightcurves_and_bin()
 
         elif service == 'gator':
             if use_cluster:
                 self.submit_to_cluster(1, "00:29:59", 15, tables, service)
             else:
-                self._query_for_photometry_gator(tables, perc, mag, flux, nthreads)
-                self._select_and_bin_lightcurves_gator()
+                self._query_for_photometry_gator(tables, chunks, mag, flux, nthreads)
 
+        if not use_cluster:
+            self._select_individual_lightcurves_and_bin(service=service, chunks=chunks)
         self._combine_binned_lcs(service)
 
     def _cache_chunk_binned_lightcurves_filename(self, chunk_number, service):
@@ -514,7 +515,7 @@ class WISEData:
         fn = self._cache_chunk_binned_lightcurves_filename(chunk_number, service)
         logger.debug(f'saving to {fn}')
         with open(fn, "w") as f:
-            json.dump(binned_lcs, f)
+            json.dump(binned_lcs, f, indent=4)
 
     def _load_chunk_binned_lcs(self, chunk_number, service):
         fn = self._cache_chunk_binned_lightcurves_filename(chunk_number, service)
@@ -559,7 +560,7 @@ class WISEData:
              f"{self._split_photometry_key}{chunk_number}{_ending}"
         return os.path.join(self._cache_photometry_dir, fn)
 
-    def _thread_query_photometry_gator(self, chunk_number, table_name, perc, mag, flux):
+    def _thread_query_photometry_gator(self, chunk_number, table_name, mag, flux):
         _infile = self._gator_chunk_photometry_cache_filename(table_name, chunk_number, gator_input=True)
         _outfile = self._gator_chunk_photometry_cache_filename(table_name, chunk_number)
         _nice_name = self.get_db_name(table_name, nice=True)
@@ -573,15 +574,6 @@ class WISEData:
         _deci_mask = self.chunk_map == chunk_number
         _mask = _deci_mask & (~self._no_allwise_source)
 
-        if perc < 1:
-            N = len(self.parent_sample.df)
-            n = int(round(N * perc))
-            a = np.zeros(N, dtype=int)
-            a[:n-1] = 1
-            np.random.shuffle(a)
-            a = a.astype(bool)
-            _mask = _mask & a
-
         res = self._match_to_wise(
             in_filename=_infile,
             out_filename=_outfile,
@@ -589,8 +581,8 @@ class WISEData:
             table_name=table_name,
             one_to_one=False,
             additional_keys=_additional_keys,
-            minsep_arcsec=4,
-            silent=False,
+            minsep_arcsec=self.min_sep.to('arcsec').value,
+            silent=True,
             constraints=self.constraints
         )
 
@@ -605,12 +597,16 @@ class WISEData:
             self.queue.task_done()
             logger.info(f"{self.queue.qsize()} tasks remaining")
 
-    def _query_for_photometry_gator(self, tables, perc, mag, flux, nthreads):
+    def _query_for_photometry_gator(self, tables, chunks, mag, flux, nthreads):
+        nthreads = min(nthreads, len(chunks))
         logger.debug(f'starting {nthreads} workers')
         threads = [threading.Thread(target=self._gator_photometry_worker_thread, daemon=True) for _ in range(nthreads)]
+
+        logger.debug(f"using {len(chunks)} chunks")
+        self.queue = queue.Queue()
         for t in np.atleast_1d(tables):
-            for i in range(self.n_chunks):
-                self.queue.put([i, t, perc, mag, flux])
+            for i in chunks:
+                self.queue.put([i, t, mag, flux])
 
         logger.info(f"added {self.queue.qsize()} tasks to queue")
         for t in threads:
@@ -646,7 +642,6 @@ class WISEData:
                 os.remove(fn)
 
         lightcurves = pd.concat(_data)
-        lightcurves = lightcurves[~lightcurves.allwise_cntr.isna()]
         return lightcurves
 
     def _subprocess_select_and_bin_gator(self, chunk_number):
@@ -657,26 +652,17 @@ class WISEData:
             parent_sample_idx_mask = lightcurves['index_01'] == parent_sample_idx
             selected_data = lightcurves[parent_sample_idx_mask]
 
-            # pos = SkyCoord(selected_data['ra_01'][0], selected_data['dec_01'][0], unit='deg')
-            # allwise_ids = selected_data[~selected_data.allwise_cntr.isna()].allwise_cntr.unique()
-            # allwise_ids_masks = [selected_data.allwise_cntr == aid for aid in allwise_ids]
-            # mean_pos = [
-            #     SkyCoord(np.median(selected_data[m]['ra']), np.median(selected_data[m]['dec']), unit='deg')
-            #      for m in allwise_ids_masks
-            # ]
-            # mean_sep = [pos.separation(mp) for mp in mean_pos]
-
             lum_keys = [c for c in lightcurves.columns if ("W1" in c) or ("W2" in c)]
             lightcurve = selected_data[['mjd'] + lum_keys]
             binned_lc = self.bin_lightcurve(lightcurve)
-            wise_id = self.parent_sample.df.loc[int(parent_sample_idx), self.parent_wise_source_id_key]
+            if self.parent_sample:
+                wise_id = self.parent_sample.df.loc[int(parent_sample_idx), self.parent_wise_source_id_key]
+            else:
+                wise_id = None
             binned_lcs[f"{int(parent_sample_idx)}_{wise_id}"] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
         self._save_chunk_binned_lcs(chunk_number, 'gator', binned_lcs)
-
-    def _select_and_bin_lightcurves_gator(self, *args, **kwargs):
-        self._select_individual_lightcurves_and_bin(*args, gator=True, **kwargs)
 
     # ------------------------------------------ #
     # END using GATOR to get photometry          #
@@ -716,7 +702,7 @@ class WISEData:
         logger.debug(f"\n{q}")
         return q
 
-    def _submit_job_to_TAP(self, chunk_number, table_name, perc, mag, flux):
+    def _submit_job_to_TAP(self, chunk_number, table_name, mag, flux):
         i = chunk_number
         t = table_name
         m = self.chunk_map == i
@@ -725,12 +711,6 @@ class WISEData:
         wise_id = np.array(self.parent_sample.df[self.parent_wise_source_id_key][~self._no_allwise_source]).astype(int)
         wise_id_sel = wise_id[np.array(m)[~self._no_allwise_source]]
         del wise_id
-
-        if perc < 1:
-            logger.debug(f"Getting {perc:.2f} % of IDs")
-            N_ids = int(round(len(wise_id_sel) * perc))
-            wise_id_sel = np.random.default_rng().choice(wise_id_sel, N_ids, replace=False, shuffle=False)
-            logger.debug(f"selected {len(wise_id_sel)} IDs")
 
         upload_table = Table({'wise_id': wise_id_sel})
         qstring = self._get_photometry_query_string(t, mag, flux)
@@ -775,9 +755,24 @@ class WISEData:
 
     def _tap_photometry_worker_thread(self):
         while True:
-            t, i = self.queue.get()
+            try:
+                t, i = self.queue.get(block=False)
+            except queue.Empty:
+                logger.debug("No more tasks, exiting")
+                break
+
             job = self.tap_jobs[t][i]
-            phase = job.phase
+
+            while True:
+                try:
+                    job._update(timeout=600)
+                    phase = job._job.phase
+                    break
+                except vo.dal.exceptions.DALServiceError as e:
+                    if '404 Client Error: Not Found for url' in str(e):
+                        raise vo.dal.exceptions.DALServiceError(f'{i}th query of {t}: {e}')
+                    else:
+                        logger.warning(f"{i}th query of {t}: DALServiceError: {e}; try again")
 
             if phase in self.running_tap_phases:
                 self.queue.put((t, i))
@@ -790,6 +785,10 @@ class WISEData:
 
             else:
                 logger.warning(f'queue {i} of {t}: Job not active! Phase is {phase}')
+
+            time.sleep(np.random.uniform(600))
+
+        logger.debug("closing thread")
 
     def _run_tap_worker_threads(self, nthreads):
         threads = [threading.Thread(target=self._tap_photometry_worker_thread, daemon=True)
@@ -806,13 +805,7 @@ class WISEData:
         self.tap_jobs = None
         del threads
 
-    def _query_for_photometry(self, tables, perc, wait, mag, flux, nthreads):
-
-        # only integers can be uploaded
-        # wise_id = np.array(self.parent_sample.df[self.parent_wise_source_id_key][~self._no_allwise_source]).astype(int)
-        # wise_id = np.array([int(idd) for idd in self.parent_sample.df[self.parent_wise_source_id_key] if idd])
-        # logger.debug(f"{len(wise_id)} IDs in total")
-
+    def _query_for_photometry(self, tables, chunks, wait, mag, flux, nthreads):
         # ----------------------------------------------------------------------
         #     Do the query
         # ----------------------------------------------------------------------
@@ -821,8 +814,10 @@ class WISEData:
 
         for t in np.atleast_1d(tables):
             self.tap_jobs[t] = dict()
-            for i in range(self.n_chunks):
-                self._submit_job_to_TAP(i, t, perc, mag, flux)
+            for i in chunks:
+                self._submit_job_to_TAP(i, t, mag, flux)
+                logger.info("waiting for 2 minutes")
+                time.sleep(2*60)
 
         logger.info(f'added {self.queue.qsize()} tasks to queue')
         logger.info(f"wait for {wait} hours to give tap_jobs some time")
@@ -833,13 +828,18 @@ class WISEData:
     #     select individual lightcurves and bin
     # ----------------------------------------------------------------------
 
-    def _select_individual_lightcurves_and_bin(self, ncpu=35, gator=False):
+    def _select_individual_lightcurves_and_bin(self, ncpu=35, service='tap', chunks=None):
         logger.info('selecting individual lightcurves and bin ...')
         ncpu = min(self.n_chunks, ncpu)
         logger.debug(f"using {ncpu} CPUs")
-        args = list(range(self.n_chunks))
+        args = list(range(self.n_chunks)) if not chunks else chunks
         logger.debug(f"multiprocessing arguments: {args}")
-        fct = self._subprocess_select_and_bin_gator if gator else self._subprocess_select_and_bin
+
+        _fcts = {
+            'gator': self._subprocess_select_and_bin_gator,
+            'tap': self._subprocess_select_and_bin
+        }
+        fct = _fcts[service]
 
         while True:
             try:
@@ -891,7 +891,7 @@ class WISEData:
                 parent_sample_entry_id = np.where(
                     np.array(self.parent_sample.df[self.parent_wise_source_id_key]) == int(ID)
                 )[0][0]
-            except IndexError:
+            except (IndexError, AttributeError):
                 parent_sample_entry_id = "0"
             binned_lcs[f"{int(parent_sample_entry_id)}_{int(ID)}"] = binned_lc.to_dict()
 
@@ -1184,11 +1184,42 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-l', '--logging_level', type=str, default='INFO')
     parser.add_argument('--phot', type=bool, default=False, nargs='?', const=True)
+    parser.add_argument('--perc', type=float, default=1)
+    parser.add_argument('--wait', type=float, default=5)
+    parser.add_argument('--service', type=str, default='tap')
+
     cfg = parser.parse_args()
 
     main_logger.setLevel(cfg.logging_level)
+    logger.debug(cfg)
 
+    start_time = time.time()
     wise_data = WISEData()
-    wise_data.match_all_chunks()
+    load_time = time.time()
+    #wise_data.match_all_chunks()
+    match_time = time.time()
     if cfg.phot:
-        wise_data.get_photometric_data()
+        wise_data.get_photometric_data(
+            tables=None,
+            perc=cfg.perc,
+            wait=5,
+            service='tap',
+            mag=True,
+            flux=False,
+            nthreads=100,
+            use_cluster=False
+        )
+    phot_time = time.time()
+
+    diag_txt = f"Took {phot_time-start_time}s in total\n" \
+               f"  {load_time-start_time}s for loading\n" \
+               f"  {match_time-load_time}s for matching\n" \
+               f"  {phot_time-match_time}s for photometry\n" \
+               f"arguments: {cfg}"
+
+    logger.info(diag_txt)
+
+    fn = os.path.join(wise_data.cache_dir, f"{cfg.perc:.2f}_{cfg.service}_diagnostic.txt")
+    with open(fn, "w") as f:
+        f.write(diag_txt)
+    logger.info(f"wrote to {fn}")
