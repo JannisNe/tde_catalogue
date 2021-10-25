@@ -1,4 +1,4 @@
-import os, subprocess, copy, json, argparse, tqdm, time, threading, queue, pickle, getpass, requests
+import os, subprocess, copy, json, argparse, tqdm, time, threading, math, queue, pickle, getpass, requests
 import multiprocessing as mp
 import pandas as pd
 import numpy as np
@@ -149,6 +149,9 @@ class WISEData:
         self.queue = queue.Queue()
         self.clear_unbinned_photometry_when_binning = False
 
+        self._tap_wise_id_key = 'wise_id'
+        self._tap_orig_id_key = 'orig_id'
+
         #########################
         # END SET-UP            #
         #######################################################################################
@@ -161,6 +164,12 @@ class WISEData:
         # self.dec_interval_masks = None
         self.chunk_map = None
         self.n_chunks = self._n_chunks
+
+        # set up cluster stuff
+        self._n_cluster_jobs_per_chunk = None
+        self.cluster_jobID_map = None
+        self.clusterJob_chunk_map = None
+        self.n_cluster_jobs_per_chunk = 100
 
     @property
     def n_chunks(self):
@@ -656,11 +665,14 @@ class WISEData:
         lightcurves = pd.concat(_data)
         return lightcurves
 
-    def _subprocess_select_and_bin_gator(self, chunk_number):
+    def _subprocess_select_and_bin_gator(self, chunk_number, indices=None):
         binned_lcs = dict()
         lightcurves = self._get_unbinned_lightcurves_gator(chunk_number,
                                                            clear=self.clear_unbinned_photometry_when_binning)
-        for parent_sample_idx in lightcurves['index_01'].unique():
+
+        _indices = lightcurves['index_01'].unique() if not indices else indices
+
+        for parent_sample_idx in _indices:
             parent_sample_idx_mask = lightcurves['index_01'] == parent_sample_idx
             selected_data = lightcurves[parent_sample_idx_mask]
 
@@ -704,7 +716,7 @@ class WISEData:
         q = 'SELECT \n\t'
         for k in keys:
             q += f'{db_name}.{k}, '
-        q += '\n\tmine.wise_id \n'
+        q += f'\n\tmine.{self._tap_wise_id_key}, mine.{self._tap_orig_id_key} \n'
         q += f'FROM\n\t{db_name} \n'
         q += f'INNER JOIN\n\tTAP_UPLOAD.ids AS mine ON {db_name}.{id_key} = mine.WISE_id \n'
         q += 'WHERE \n'
@@ -720,11 +732,12 @@ class WISEData:
         m = self.chunk_map == i
 
         # if perc is smaller than one select only a subset of wise IDs
-        wise_id = np.array(self.parent_sample.df[self.parent_wise_source_id_key][~self._no_allwise_source]).astype(int)
-        wise_id_sel = wise_id[np.array(m)[~self._no_allwise_source]]
-        del wise_id
+        sel = self.parent_sample.df[np.array(m)[~self._no_allwise_source]]
+        wise_id_sel = np.array(sel[self.parent_wise_source_id_key]).astype(int)
+        id_sel = np.array(sel.index).astype(int)
+        del sel
 
-        upload_table = Table({'wise_id': wise_id_sel})
+        upload_table = Table({self._tap_wise_id_key: wise_id_sel, self._tap_orig_id_key: id_sel})
         qstring = self._get_photometry_query_string(t, mag, flux)
 
         try:
@@ -792,7 +805,7 @@ class WISEData:
 
             if phase in self.running_tap_phases:
                 self.queue.put((t, i))
-                continue
+                self.queue.task_done()
 
             elif phase in self.done_tap_phases:
                 self._thread_wait_and_get_results(t, i)
@@ -813,7 +826,11 @@ class WISEData:
         for t in threads:
             t.start()
 
-        self.queue.join()
+        try:
+            self.queue.join()
+        except KeyboardInterrupt:
+            pass
+
         logger.info('all tap_jobs done!')
         for i, t in enumerate(threads):
             logger.debug(f"{i}th thread alive: {t.is_alive()}")
@@ -827,8 +844,9 @@ class WISEData:
         # ----------------------------------------------------------------------
         self.tap_jobs = dict()
         self.queue = queue.Queue()
+        tables = np.atleast_1d(tables)
 
-        for t in np.atleast_1d(tables):
+        for t in tables:
             self.tap_jobs[t] = dict()
             for i in chunks:
                 self._submit_job_to_TAP(i, t, mag, flux)
@@ -838,6 +856,7 @@ class WISEData:
         logger.info(f'added {self.queue.qsize()} tasks to queue')
         logger.info(f"wait for {wait} hours to give tap_jobs some time")
         time.sleep(wait * 3600)
+        nthreads = min(len(tables) * len(chunks), nthreads)
         self._run_tap_worker_threads(nthreads)
         self.queue = None
 
@@ -894,22 +913,17 @@ class WISEData:
 
         return lightcurves
 
-    def _subprocess_select_and_bin(self, chunk_number):
+    def _subprocess_select_and_bin(self, chunk_number, indices=None):
         lightcurves = self._get_unbinned_lightcurves(chunk_number, clear=self.clear_unbinned_photometry_when_binning)
         # run through the ids and bin the lightcurves
-        unique_id = lightcurves.wise_id.unique()
+        unique_id = lightcurves[self._tap_orig_id_key].unique() if not indices else indices
         logger.debug(f"chunk {chunk_number}: going through {len(unique_id)} IDs")
         binned_lcs = dict()
-        for ID in unique_id:
-            m = lightcurves.wise_id == ID
+        for parent_sample_entry_id in tqdm.tqdm(unique_id):
+            m = lightcurves[self._tap_orig_id_key] == parent_sample_entry_id
             lightcurve = lightcurves[m]
+            ID = lightcurve[self._tap_wise_id_key].iloc[0]
             binned_lc = self.bin_lightcurve(lightcurve)
-            try:
-                parent_sample_entry_id = np.where(
-                    np.array(self.parent_sample.df[self.parent_wise_source_id_key]) == int(ID)
-                )[0][0]
-            except (IndexError, AttributeError):
-                parent_sample_entry_id = "0"
             binned_lcs[f"{int(parent_sample_entry_id)}_{int(ID)}"] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
@@ -1034,6 +1048,33 @@ class WISEData:
         else:
             logger.info(f'No Job ID!')
 
+    @property
+    def n_cluster_jobs_per_chunk(self):
+        return self._n_cluster_jobs_per_chunk
+
+    @n_cluster_jobs_per_chunk.setter
+    def n_cluster_jobs_per_chunk(self, value):
+        self._n_cluster_jobs_per_chunk = value
+
+        if value:
+            n_jobs = self.n_chunks * int(value)
+            logger.debug(f'setting {n_jobs} jobs.')
+            self.cluster_jobID_map = np.zeros(len(self.parent_sample.df), dtype=int)
+            self.clusterJob_chunk_map = np.zeros(n_jobs, dtype=int)
+
+            for chunk_number in range(self.n_chunks):
+                indices = np.where(self.chunk_map == chunk_number)[0]
+                N_inds_per_job = int(math.ceil(len(indices) / self._n_cluster_jobs_per_chunk))
+                for j in range(self._n_cluster_jobs_per_chunk):
+                    job_nr = chunk_number*self._n_cluster_jobs_per_chunk + j
+                    self.clusterJob_chunk_map[job_nr] = chunk_number
+                    start_ind = j * N_inds_per_job
+                    end_ind = start_ind + N_inds_per_job
+                    self.cluster_jobID_map[indices[start_ind:end_ind]] = job_nr
+
+        else:
+            logger.warning(f'Invalid value for n_cluster_jobs_per_chunk: {value}')
+
     def _make_cluster_script(self, cluster_h, cluster_ram, tables, service):
         script_fn = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'download_and_bin_single_chunk.py')
         tables = np.atleast_1d(tables)
@@ -1102,7 +1143,7 @@ class WISEData:
         if cluster_cpu > 1:
             submit_cmd += "-pe multicore {0} -R y ".format(cluster_cpu)
         submit_cmd += f'-N wise_lightcurves '
-        submit_cmd += f"-t 1-{self.n_chunks+1}:1 {self.submit_file} {parentsample_class_pickle}"
+        submit_cmd += f"-t 1-{self.n_chunks*self.n_cluster_jobs_per_chunk+1}:1 {self.submit_file} {parentsample_class_pickle}"
         logger.debug(f"Ram per core: {cluster_ram}")
         logger.info(f"{time.asctime(time.localtime())}: {submit_cmd}")
 
