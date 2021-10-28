@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from tde_catalogue import main_logger, cache_dir, plots_dir, output_dir, BASHFILE
 from tde_catalogue.data.mir_flares import base_name as mir_base_name
 from tde_catalogue.data.mir_flares.combined_parent_sample import CombinedParentSample
+from tde_catalogue.data.mir_flares.sdss_photometric_galaxies import SDSSPhotometricGalaxies
 
 logger = main_logger.getChild(__name__)
 
@@ -81,9 +82,9 @@ class WISEData:
 
     def __init__(self,
                  min_sep_arcsec=10,
-                 n_chunks=30,
+                 n_chunks=2,
                  base_name=base_name,
-                 parent_sample_class=CombinedParentSample):
+                 parent_sample_class=SDSSPhotometricGalaxies):
         """
         Initialise a class instance
         :param min_sep_arcsec: float, minimum separation required to the parent sample sources
@@ -101,7 +102,6 @@ class WISEData:
         self.base_name = base_name
         self.min_sep = min_sep_arcsec * u.arcsec
         self._n_chunks = n_chunks
-        self.job_id = None
 
         # --------------------------- vvvv set up parent sample vvvv --------------------------- #
         self.parent_ra_key = parent_sample.default_keymap['ra'] if parent_sample else None
@@ -166,10 +166,12 @@ class WISEData:
         self.n_chunks = self._n_chunks
 
         # set up cluster stuff
+        self.job_id = None
         self._n_cluster_jobs_per_chunk = None
         self.cluster_jobID_map = None
         self.clusterJob_chunk_map = None
-        self.n_cluster_jobs_per_chunk = 100
+        self.cluster_info_file = os.path.join(self.cluster_dir, 'cluster_info.pkl')
+        # self.n_cluster_jobs_per_chunk = 100
 
     @property
     def n_chunks(self):
@@ -482,9 +484,10 @@ class WISEData:
     ###################################
 
     def get_photometric_data(self, tables=None, perc=1, wait=5, service=None, mag=True, flux=False, nthreads=100,
-                             use_cluster=False, chunks=None):
+                             chunks=None, cluster_jobs_per_chunk=0):
         """
         Load photometric data from the IRSA server for the matched sample
+        :param cluster_jobs_per_chunk: int, if greater than zero uses the DESY cluster
         :param tables: list like, WISE tables to use for photometry query, defaults to AllWISE and NOEWISER photometry
         :param perc: float, percentage of sources to load photometry for, default 1
         :param use_cluster: bool, submits to DESY cluster if True
@@ -513,53 +516,98 @@ class WISEData:
                      f"in {'magnitude' if mag else ''} {'flux' if flux else ''} "
                      f"from {tables}")
 
+        if cluster_jobs_per_chunk:
+            self.n_cluster_jobs_per_chunk = cluster_jobs_per_chunk
+
+            cluster_time_s = len(self.parent_sample.df) / self._n_chunks / self.n_cluster_jobs_per_chunk
+            if cluster_time_s > 24 * 3600:
+                raise ValueError(f"cluster time per job would be longer than 24h! "
+                                 f"Choose more than {self.n_cluster_jobs_per_chunk} jobs per chunk!")
+
+            cluster_time = time.strftime('%H:%M:%S', time.gmtime(cluster_time_s))
+            cluster_args = [1, cluster_time, '10', service]
+
         if service == 'tap':
             self._query_for_photometry(tables, chunks, wait, mag, flux, nthreads)
-            if use_cluster:
-                self.submit_to_cluster(1, "00:29:59", 15, tables, service)
+            if cluster_jobs_per_chunk:
+                pass
+                # self.run_cluster(*cluster_args)
 
         elif service == 'gator':
-            if use_cluster:
-                self.submit_to_cluster(1, "00:29:59", 15, tables, service)
+            if cluster_jobs_per_chunk:
+                self.run_cluster(*cluster_args)
             else:
                 self._query_for_photometry_gator(tables, chunks, mag, flux, nthreads)
 
-        if not use_cluster:
-            self._select_individual_lightcurves_and_bin(service=service, chunks=chunks)
-        self._combine_binned_lcs(service)
+        # if not cluster_jobs_per_chunk:
+        #     self._select_individual_lightcurves_and_bin(service=service, chunks=chunks)
+        # self._combine_binned_lcs(service)
 
-    def _cache_chunk_binned_lightcurves_filename(self, chunk_number, service):
-        fn = f"binned_lightcurves_{service}{self._split_photometry_key}{chunk_number}.json"
+    def _cache_chunk_binned_lightcurves_filename(self, chunk_number, service, jobID):
+        jobID_str = f"_{jobID}" if jobID else ''
+        fn = f"binned_lightcurves_{service}{self._split_photometry_key}{chunk_number}{jobID_str}.json"
         return os.path.join(self._cache_photometry_dir, fn)
 
-    def _save_chunk_binned_lcs(self, chunk_number, service, binned_lcs):
-        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number, service)
+    def _save_chunk_binned_lcs(self, chunk_number, service, binned_lcs, jobID):
+        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number, service, jobID)
         logger.debug(f'saving to {fn}')
         with open(fn, "w") as f:
             json.dump(binned_lcs, f, indent=4)
 
-    def _load_chunk_binned_lcs(self, chunk_number, service):
-        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number, service)
+    def _load_chunk_binned_lcs(self, chunk_number, service, jobID):
+        fn = self._cache_chunk_binned_lightcurves_filename(chunk_number, service, jobID)
         with open(fn, "r") as f:
             binned_lcs = json.load(f)
         return binned_lcs, fn
+
+    def _combine_binned_lcs_perchunk(self, service):
+        for c in range(self.n_chunks):
+            logger.debug(f"chunk {c+1} of {self.n_chunks}")
+            dicts = list()
+            jobs = list(self.clusterJob_chunk_map.index[self.clusterJob_chunk_map.chunk_number == c])
+            for j in tqdm.tqdm(jobs, desc="loading files for jobs"):
+                try:
+                    lcs, fn = self._load_chunk_binned_lcs(c, service, j)
+                    dicts.append(lcs)
+                    if self.clear_unbinned_photometry_when_binning:
+                        os.remove(fn)
+                except FileNotFoundError:
+                    logger.warning(f"No file for {service}, chunk {c} job{j}")
+            d = dicts[0]
+            for dd in dicts[1:]:
+                d.update(dd)
+
+            self._save_chunk_binned_lcs(c, service, d, None)
 
     def load_binned_lcs(self, service):
         with open(self.binned_lightcurves_filename(service), "r") as f:
             return json.load(f)
 
-    def _combine_binned_lcs(self, service):
+    def _combine_binned_lcs(self, service, overwrite=False):
         dicts = list()
         for c in range(self.n_chunks):
             try:
-                lcs, fn = self._load_chunk_binned_lcs(c, service)
+                lcs, fn = self._load_chunk_binned_lcs(c, service, None)
                 dicts.append(lcs)
                 if self.clear_unbinned_photometry_when_binning:
                     os.remove(fn)
             except FileNotFoundError:
                 logger.warning(f"No file for {service}, chunk {c}")
-        d = dicts[0]
-        for dd in dicts[1:]:
+
+        d = None
+        if not overwrite:
+            try:
+                d = self.load_binned_lcs(service)
+                ii = 0
+            except FileNotFoundError as e:
+                logger.info(f"FileNotFoundError: {e}. Making new binned lightcurves.")
+                # d will still be None and set in the following if clause
+
+        if isinstance(d, type(None)):
+            d = dicts[0]
+            ii = 1
+
+        for dd in dicts[ii:]:
             d.update(dd)
 
         fn = self.binned_lightcurves_filename(service)
@@ -665,12 +713,17 @@ class WISEData:
         lightcurves = pd.concat(_data)
         return lightcurves
 
-    def _subprocess_select_and_bin_gator(self, chunk_number, indices=None):
+    def _subprocess_select_and_bin_gator(self, chunk_number=None, jobID=None):
         binned_lcs = dict()
         lightcurves = self._get_unbinned_lightcurves_gator(chunk_number,
                                                            clear=self.clear_unbinned_photometry_when_binning)
 
-        _indices = lightcurves['index_01'].unique() if not indices else indices
+        if jobID:
+            chunk_number = self.clusterJob_chunk_map.loc[jobID, 'chunk_number']
+            _indices = np.where(self.cluster_jobID_map == jobID)[0]
+
+        else:
+            _indices = lightcurves['index_01'].unique()
 
         for parent_sample_idx in _indices:
             parent_sample_idx_mask = lightcurves['index_01'] == parent_sample_idx
@@ -686,7 +739,7 @@ class WISEData:
             binned_lcs[f"{int(parent_sample_idx)}_{wise_id}"] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
-        self._save_chunk_binned_lcs(chunk_number, 'gator', binned_lcs)
+        self._save_chunk_binned_lcs(chunk_number, 'gator', binned_lcs, jobID)
 
     # ------------------------------------------ #
     # END using GATOR to get photometry          #
@@ -732,12 +785,13 @@ class WISEData:
         m = self.chunk_map == i
 
         # if perc is smaller than one select only a subset of wise IDs
-        sel = self.parent_sample.df[np.array(m)[~self._no_allwise_source]]
+        sel = self.parent_sample.df[np.array(m) & ~ self._no_allwise_source]
         wise_id_sel = np.array(sel[self.parent_wise_source_id_key]).astype(int)
         id_sel = np.array(sel.index).astype(int)
         del sel
 
         upload_table = Table({self._tap_wise_id_key: wise_id_sel, self._tap_orig_id_key: id_sel})
+        logger.debug(f"{chunk_number}th query of {table_name}: uploading {len(upload_table)} objects.")
         qstring = self._get_photometry_query_string(t, mag, flux)
 
         try:
@@ -913,21 +967,37 @@ class WISEData:
 
         return lightcurves
 
-    def _subprocess_select_and_bin(self, chunk_number, indices=None):
-        lightcurves = self._get_unbinned_lightcurves(chunk_number, clear=self.clear_unbinned_photometry_when_binning)
+    def _subprocess_select_and_bin(self, chunk_number=None, jobID=None):
         # run through the ids and bin the lightcurves
-        unique_id = lightcurves[self._tap_orig_id_key].unique() if not indices else indices
-        logger.debug(f"chunk {chunk_number}: going through {len(unique_id)} IDs")
+
+        if jobID:
+            _chunk_number = self.clusterJob_chunk_map.loc[jobID, 'chunk_number']
+            indices = np.where(self.cluster_jobID_map == jobID)[0]
+        else:
+            _chunk_number = chunk_number
+
+        lightcurves = self._get_unbinned_lightcurves(_chunk_number, clear=self.clear_unbinned_photometry_when_binning)
+
+        if not jobID:
+            indices = lightcurves['index_01'].unique()
+
+        logger.debug(f"chunk {_chunk_number}: going through {len(indices)} IDs")
+
         binned_lcs = dict()
-        for parent_sample_entry_id in tqdm.tqdm(unique_id):
+        for parent_sample_entry_id in tqdm.tqdm(indices):
             m = lightcurves[self._tap_orig_id_key] == parent_sample_entry_id
             lightcurve = lightcurves[m]
+
+            if len(lightcurve) < 1:
+                logger.warning(f"No data for {parent_sample_entry_id}")
+                continue
+
             ID = lightcurve[self._tap_wise_id_key].iloc[0]
             binned_lc = self.bin_lightcurve(lightcurve)
             binned_lcs[f"{int(parent_sample_entry_id)}_{int(ID)}"] = binned_lc.to_dict()
 
-        logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
-        self._save_chunk_binned_lcs(chunk_number, 'tap', binned_lcs)
+        logger.debug(f"chunk {_chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
+        self._save_chunk_binned_lcs(_chunk_number, 'tap', binned_lcs, jobID)
 
     # ---------------------------------------- #
     # END using TAP to get photometry          #
@@ -1060,14 +1130,14 @@ class WISEData:
             n_jobs = self.n_chunks * int(value)
             logger.debug(f'setting {n_jobs} jobs.')
             self.cluster_jobID_map = np.zeros(len(self.parent_sample.df), dtype=int)
-            self.clusterJob_chunk_map = np.zeros(n_jobs, dtype=int)
+            self.clusterJob_chunk_map = pd.DataFrame(columns=['chunk_number'])
 
             for chunk_number in range(self.n_chunks):
                 indices = np.where(self.chunk_map == chunk_number)[0]
                 N_inds_per_job = int(math.ceil(len(indices) / self._n_cluster_jobs_per_chunk))
                 for j in range(self._n_cluster_jobs_per_chunk):
-                    job_nr = chunk_number*self._n_cluster_jobs_per_chunk + j
-                    self.clusterJob_chunk_map[job_nr] = chunk_number
+                    job_nr = chunk_number*self._n_cluster_jobs_per_chunk + j + 1
+                    self.clusterJob_chunk_map.loc[job_nr] = [chunk_number]
                     start_ind = j * N_inds_per_job
                     end_ind = start_ind + N_inds_per_job
                     self.cluster_jobID_map[indices[start_ind:end_ind]] = job_nr
@@ -1075,11 +1145,26 @@ class WISEData:
         else:
             logger.warning(f'Invalid value for n_cluster_jobs_per_chunk: {value}')
 
+    def _save_cluster_info(self):
+        logger.debug(f"writing cluster info to {self.cluster_info_file}")
+        with open(self.cluster_info_file, "wb") as f:
+            pickle.dump((self.cluster_jobID_map, self.clusterJob_chunk_map), f)
+
+    def _load_cluster_info(self):
+        logger.debug(f"loading cluster info from {self.cluster_info_file}")
+        with open(self.cluster_info_file, "rb") as f:
+            self.cluster_jobID_map, self.clusterJob_chunk_map = pickle.load(f)
+
     def _make_cluster_script(self, cluster_h, cluster_ram, tables, service):
-        script_fn = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'download_and_bin_single_chunk.py')
-        tables = np.atleast_1d(tables)
-        tables = [self.get_db_name(t, nice=False) for t in tables]
-        tables_str = ' '.join(tables)
+        script_fn = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'bin_lightcurves.py')
+
+        if tables:
+            tables = np.atleast_1d(tables)
+            tables = [self.get_db_name(t, nice=False) for t in tables]
+            tables_str = f"--tables {' '.join(tables)} \n"
+        else:
+            tables_str = '\n'
+
         casjobs_pw = os.environ['CASJOBS_PW']
 
         text = "#!/bin/zsh \n" \
@@ -1093,7 +1178,7 @@ class WISEData:
                "## \n" \
                "## \n" \
                "##(send mail on job's abort) \n" \
-               "#$ -m aeb \n" \
+               "#$ -m a \n" \
                "## \n" \
                "##(stderr and stdout are merged together to stdout) \n" \
                "#$ -j y \n" \
@@ -1102,11 +1187,11 @@ class WISEData:
                "## -N TDE Catalogue download \n" \
                "## \n" \
                "##(redirect output to:) \n" \
-               f"#$ -o {self.cluster_log_dir} \n" \
+               f"#$ -o /dev/null \n" \
                "## \n" \
                "sleep $(( ( RANDOM % 60 )  + 1 )) \n" \
-               'exec > "$TMPDIR"/${JOB_ID}_stdout.txt ' \
-               '2>"$TMPDIR"/${JOB_ID}_stderr.txt \n' \
+               'exec > "$TMPDIR"/${JOB_ID}_${SGE_TASK_ID}_stdout.txt ' \
+               '2>"$TMPDIR"/${JOB_ID}_${SGE_TASK_ID}_stderr.txt \n' \
               f'source {BASHFILE} \n' \
               f'export CASJOBS_PW={casjobs_pw} \n' \
                'tde_catalogue \n' \
@@ -1117,11 +1202,10 @@ class WISEData:
                f'--min_sep_arcsec {self.min_sep.to("arcsec").value} ' \
                f'--n_chunks {self._n_chunks} ' \
                f'--service {service} ' \
-               f'--parentsample_class_pickle $1 ' \
-               f'--chunk_number $((SGE_TASK_ID-O)) ' \
-               f'--tables {tables_str} \n' \
-               'cp $TMPDIR/${JOB_ID}_stdout.txt ' + self.cluster_log_dir + '\n' \
-               'cp $TMPDIR/${JOB_ID}_stderr.txt ' + self.cluster_log_dir + '\n '
+               f'--job_id $SGE_TASK_ID ' \
+               f'{tables_str}' \
+               'cp $TMPDIR/${JOB_ID}_${SGE_TASK_ID}_stdout.txt ' + self.cluster_log_dir + '\n' \
+               'cp $TMPDIR/${JOB_ID}_${SGE_TASK_ID}_stderr.txt ' + self.cluster_log_dir + '\n '
 
         logger.debug(f"Submit file: \n {text}")
         logger.debug(f"Creating file at {self.submit_file}")
@@ -1134,6 +1218,8 @@ class WISEData:
 
     def submit_to_cluster(self, cluster_cpu, cluster_h, cluster_ram, tables, service):
 
+        self._save_cluster_info()
+
         parentsample_class_pickle = os.path.join(self.cluster_dir, 'parentsample_class.pkl')
         logger.debug(f"pickling parent sample class to {parentsample_class_pickle}")
         with open(parentsample_class_pickle, "wb") as f:
@@ -1143,11 +1229,22 @@ class WISEData:
         if cluster_cpu > 1:
             submit_cmd += "-pe multicore {0} -R y ".format(cluster_cpu)
         submit_cmd += f'-N wise_lightcurves '
-        submit_cmd += f"-t 1-{self.n_chunks*self.n_cluster_jobs_per_chunk+1}:1 {self.submit_file} {parentsample_class_pickle}"
+        submit_cmd += f"-t 1-{self.n_chunks*self.n_cluster_jobs_per_chunk}:1 {self.submit_file}"
         logger.debug(f"Ram per core: {cluster_ram}")
         logger.info(f"{time.asctime(time.localtime())}: {submit_cmd}")
 
         self._make_cluster_script(cluster_h, cluster_ram, tables, service)
+
+        # process = subprocess.Popen(submit_cmd, stdout=subprocess.PIPE, shell=True)
+        # msg = process.stdout.read().decode()
+        # logger.info(str(msg))
+        # self.job_id = int(str(msg).split('job-array')[1].split('.')[0])
+        # logger.info(f"Running on cluster with ID {self.job_id}")
+
+    def run_cluster(self, cluster_cpu, cluster_h, cluster_ram, service):
+        self.submit_to_cluster(cluster_cpu, cluster_h, cluster_ram, tables=None, service=service)
+        self.wait_for_job()
+        self._combine_binned_lcs_perchunk(service)
 
     # ---------------------------------------------------- #
     # END using cluster for downloading and binning        #
@@ -1170,7 +1267,7 @@ class WISEData:
         _get_unbinned_lcs_fct = self._get_unbinned_lightcurves if service == 'tap' else self._get_unbinned_lightcurves_gator
 
         if not wise_id and (parent_sample_idx is not None):
-            wise_id = self.parent_sample.df.loc[int(parent_sample_idx), self.parent_wise_source_id_key]
+            wise_id = int(self.parent_sample.df.loc[int(parent_sample_idx), self.parent_wise_source_id_key])
             logger.debug(f"{wise_id} for {parent_sample_idx}")
 
         if (wise_id is not None) and not parent_sample_idx:
@@ -1229,7 +1326,7 @@ class WISEData:
             plt.close()
 
     #####################################
-    # START MAKE PLOTTING FUNCTIONS     #
+    # END MAKE PLOTTING FUNCTIONS     #
     ###########################################################################################################
 
 
@@ -1252,16 +1349,9 @@ if __name__ == '__main__':
     #wise_data.match_all_chunks()
     match_time = time.time()
     if cfg.phot:
-        wise_data.get_photometric_data(
-            tables=None,
-            perc=cfg.perc,
-            wait=5,
-            service='tap',
-            mag=True,
-            flux=False,
-            nthreads=100,
-            use_cluster=False
-        )
+        wise_data.get_photometric_data(tables='NEOWISE-R Single Exposure (L1b) Source Table',
+                                       perc=cfg.perc, wait=10, service='tap', mag=True, flux=False,
+                                       nthreads=100, cluster_jobs_per_chunk=500)
     phot_time = time.time()
 
     diag_txt = f"Took {phot_time-start_time}s in total\n" \
