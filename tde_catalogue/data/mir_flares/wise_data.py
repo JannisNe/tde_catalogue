@@ -40,6 +40,10 @@ class WISEData:
     error_key_ext = "_error"
     band_plot_colors = {'W1': 'r', 'W2': 'b'}
 
+    mean_key = '_mean'
+    rms_key = '_rms'
+    upper_limit_key = '_ul'
+
     photometry_table_keymap = {
         'AllWISE Multiepoch Photometry Table': {
             'flux': {
@@ -143,7 +147,7 @@ class WISEData:
         self.submit_file = os.path.join(self.cluster_dir, 'submit.txt')
 
         # set up result attributes
-        self._split_photometry_key = '__chunk'
+        self._split_chunk_key = '__chunk'
         self._cached_raw_photometry_prefix = 'raw_photometry'
         self.tap_jobs = None
         self.queue = queue.Queue()
@@ -545,7 +549,7 @@ class WISEData:
 
     def _cache_chunk_binned_lightcurves_filename(self, chunk_number, service, jobID):
         jobID_str = f"_{jobID}" if jobID else ''
-        fn = f"binned_lightcurves_{service}{self._split_photometry_key}{chunk_number}{jobID_str}.json"
+        fn = f"binned_lightcurves_{service}{self._split_chunk_key}{chunk_number}{jobID_str}.json"
         return os.path.join(self._cache_photometry_dir, fn)
 
     def _save_chunk_binned_lcs(self, chunk_number, service, binned_lcs, jobID):
@@ -626,7 +630,7 @@ class WISEData:
         _gator_input = '_gator_input' if gator_input else ''
         _ending = '.xml' if gator_input else'.tbl'
         fn = f"{self._cached_raw_photometry_prefix}_{table_name}{_additional_neowise_query}{_gator_input}" \
-             f"{self._split_photometry_key}{chunk_number}{_ending}"
+             f"{self._split_chunk_key}{chunk_number}{_ending}"
         return os.path.join(self._cache_photometry_dir, fn)
 
     def _thread_query_photometry_gator(self, chunk_number, table_name, mag, flux):
@@ -688,7 +692,7 @@ class WISEData:
         fns = [os.path.join(self._cache_photometry_dir, fn)
                for fn in os.listdir(self._cache_photometry_dir)
                if (fn.startswith(self._cached_raw_photometry_prefix) and
-                   fn.endswith(f"{self._split_photometry_key}{chunk_number}.tbl"))
+                   fn.endswith(f"{self._split_chunk_key}{chunk_number}.tbl"))
                ]
 
         logger.debug(f"chunk {chunk_number}: loading {len(fns)} files for chunk {chunk_number}")
@@ -809,7 +813,7 @@ class WISEData:
         table_name = self.get_db_name(table_nice_name)
         _additional_neowise_query = '_neowise_gator' if additional_neowise_query else ''
         fn = f"{self._cached_raw_photometry_prefix}_{table_name}{_additional_neowise_query}" \
-             f"{self._split_photometry_key}{chunk_number}.csv"
+             f"{self._split_chunk_key}{chunk_number}.csv"
         return os.path.join(self._cache_photometry_dir, fn)
 
     def _thread_wait_and_get_results(self, t, i):
@@ -956,7 +960,7 @@ class WISEData:
         fns = [os.path.join(self._cache_photometry_dir, fn)
                for fn in os.listdir(self._cache_photometry_dir)
                if (fn.startswith(self._cached_raw_photometry_prefix) and fn.endswith(
-                f"{self._split_photometry_key}{chunk_number}.csv"
+                f"{self._split_chunk_key}{chunk_number}.csv"
             ))]
         logger.debug(f"chunk {chunk_number}: loading {len(fns)} files for chunk {chunk_number}")
         lightcurves = pd.concat([pd.read_csv(fn) for fn in fns])
@@ -1042,9 +1046,9 @@ class WISEData:
                             u_mes = np.sqrt(sum(e ** 2 / len(e)))
 
                         u_rms = np.sqrt(sum((f - mean) ** 2) / len(f))
-                        r[f'{b}_mean{lum_ext}'] = mean
-                        r[f'{b}{lum_ext}_rms'] = max(u_rms, u_mes)
-                        r[f'{b}{lum_ext}_ul'] = bool(ul)
+                        r[f'{b}{self.mean_key}{lum_ext}'] = mean
+                        r[f'{b}{lum_ext}{self.rms_key}'] = max(u_rms, u_mes)
+                        r[f'{b}{lum_ext}{self.upper_limit_key}'] = bool(ul)
                     except KeyError:
                         pass
 
@@ -1326,7 +1330,65 @@ class WISEData:
             plt.close()
 
     #####################################
-    # END MAKE PLOTTING FUNCTIONS     #
+    #  END MAKE PLOTTING FUNCTIONS      #
+    ###########################################################################################################
+
+    ###########################################################################################################
+    #  START CALCULATE METADATA         #
+    #####################################
+
+    def _metadata_filename(self, service, chunk_number=None, jobID=None):
+        if not chunk_number and not jobID:
+            return os.path.join(self.lightcurve_dir, f'metadata_{service}.json')
+        elif chunk_number and not jobID:
+            return os.path.join(self.cache_dir, f'metadata_{service}{self._split_chunk_key}{chunk_number}')
+        else:
+            raise NotImplementedError
+
+    def _load_metadata(self, service, chunk_number=None, jobID=None):
+        fn = self._metadata_filename(service, chunk_number, jobID)
+        with open(fn, "r") as f:
+            metadata = json.load(f)
+        return metadata
+
+    def _save_metadata(self, metadata, service, chunk_number=None, jobID=None):
+        fn = self._metadata_filename(service, chunk_number, jobID)
+        with open(fn, "w") as f:
+            json.dump(metadata, f)
+
+    def load_metadata(self, service):
+        return self._load_metadata(service)
+
+    def calculate_metadata(self, service, chunk_number=None, jobID=None):
+        lcs = self.load_binned_lcs(service, chunk_number, jobID)
+        metadata = self._calculate_metadata(lcs)
+        self._save_metadata(metadata, service, chunk_number, jobID)
+
+    def _calculate_metadata(self, lcs):
+        metadata = dict()
+
+        for ID, lc_dict in lcs.items():
+            imetadata = dict()
+            lc = pd.DataFrame.from_dict(lc_dict)
+            for band in self.bands:
+                for lum_key in [self.mag_key_ext, self.flux_key_ext]:
+                    k = f"{band}_max_dif{lum_key}"
+                    try:
+                        llumkey = f"{band}{self.mean_key}{lum_key}"
+                        imin = lc[llumkey].min()
+                        imax = lc[llumkey].max()
+                        if lum_key == self.mag_key_ext:
+                            imetadata[k] = imax - imin
+                        else:
+                            imetadata[k] = imax / imin
+                    except KeyError:
+                        pass
+
+            metadata[ID] = imetadata
+        return metadata
+
+    #####################################
+    #  END CALCULATE METADATA           #
     ###########################################################################################################
 
 
