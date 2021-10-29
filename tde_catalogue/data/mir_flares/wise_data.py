@@ -790,16 +790,25 @@ class WISEData:
         logger.debug(f"{chunk_number}th query of {table_name}: uploading {len(upload_table)} objects.")
         qstring = self._get_photometry_query_string(t, mag, flux)
 
-        try:
-            job = WISEData.service.submit_job(qstring, uploads={'ids': upload_table})
-            job.run()
-            logger.info(f'submitted job for {t} for chunk {i}: ')
-            logger.debug(f'Job: {job.url}; {job.phase}')
-            self.tap_jobs[t][i] = job
-            self.queue.put((t, i))
-        except requests.exceptions.ConnectionError as e:
-            logger.warning(f"{chunk_number}th query of {table_name}: Could not submit TAP job!\n"
-                           f"{e}")
+        N_tries = 5
+        while True:
+            if N_tries == 0:
+                logger.warning("No more tries left!")
+            try:
+                job = WISEData.service.submit_job(qstring, uploads={'ids': upload_table})
+                job.run()
+                logger.info(f'submitted job for {t} for chunk {i}: ')
+                logger.debug(f'Job: {job.url}; {job.phase}')
+                self.tap_jobs[t][i] = job
+                self.queue.put((t, i))
+                break
+            except (requests.exceptions.ConnectionError, vo.dal.exceptions.DALServiceError) as e:
+                wait = 60
+                N_tries -= 1
+                logger.warning(f"{chunk_number}th query of {table_name}: Could not submit TAP job!\n"
+                               f"{e}. Waiting {wait}s and try again. {N_tries} tries left.")
+                time.sleep(wait)
+
 
     def _chunk_photometry_cache_filename(self, table_nice_name, chunk_number, additional_neowise_query=False):
         table_name = self.get_db_name(table_nice_name)
@@ -1427,10 +1436,14 @@ class WISEData:
             for band in self.bands:
                 for lum_key in [self.mag_key_ext, self.flux_key_ext]:
                     llumkey = f"{band}{self.mean_key}{lum_key}"
+                    errkey = f"{band}{lum_key}{self.rms_key}"
+                    ul_key = f'{band}{lum_key}{self.upper_limit_key}'
+
                     difk = f"{band}_max_dif{lum_key}"
+                    rmsk = f"{band}_min_rms{lum_key}"
                     Nk = f"{band}_N_datapoints{lum_key}"
                     dtk = f"{band}_max_deltat{lum_key}"
-                    ul_key = f'{band}{lum_key}{self.upper_limit_key}'
+
                     try:
                         ilc = lc[~np.array(lc[ul_key]).astype(bool)]
                         imetadata[Nk] = len(ilc)
@@ -1438,11 +1451,14 @@ class WISEData:
                         if len(ilc) > 0:
                             imin = ilc[llumkey].min()
                             imax = ilc[llumkey].max()
+                            imin_rms = ilc[errkey].min()
 
                             if lum_key == self.mag_key_ext:
                                 imetadata[difk] = imax - imin
                             else:
                                 imetadata[difk] = imax / imin
+
+                            imetadata[rmsk] = imin_rms
 
                             if len(ilc) == 1:
                                 imetadata[dtk] = 0
