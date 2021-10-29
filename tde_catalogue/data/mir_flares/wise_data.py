@@ -971,7 +971,7 @@ class WISEData:
             # _chunk_number = self.clusterJob_chunk_map.loc[jobID, 'chunk_number']
             indices = np.where(self.cluster_jobID_map == jobID)[0]
         else:
-            indices = lightcurves['index_01'].unique()
+            indices = lightcurves[self._tap_orig_id_key].unique()
 
         logger.debug(f"chunk {chunk_number}: going through {len(indices)} IDs")
 
