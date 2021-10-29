@@ -735,7 +735,7 @@ class WISEData:
             binned_lcs[f"{int(parent_sample_idx)}_{wise_id}"] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
-        self._save_lightcurves(binned_lcs, service='gator', chunk_number=chunk_number, jobID=jobID)
+        self._save_lightcurves(binned_lcs, service='gator', chunk_number=chunk_number, jobID=jobID, overwrite=True)
 
     # ------------------------------------------ #
     # END using GATOR to get photometry          #
