@@ -537,9 +537,9 @@ class WISEData:
             else:
                 self._query_for_photometry_gator(tables, chunks, mag, flux, nthreads)
 
-        # if not cluster_jobs_per_chunk:
-        #     self._select_individual_lightcurves_and_bin(service=service, chunks=chunks)
-        # self._combine_binned_lcs(service)
+        if not cluster_jobs_per_chunk:
+            self._select_individual_lightcurves_and_bin(service=service, chunks=chunks)
+        self._combine_binned_lcs(service)
 
     def _lightcurve_filename(self, service, chunk_number=None, jobID=None):
         if (chunk_number is None) and (jobID is None):
