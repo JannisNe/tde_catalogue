@@ -164,8 +164,6 @@ class WISEData:
         # START CHUNK MASK      #
         #########################
 
-        # self.dec_intervalls = None
-        # self.dec_interval_masks = None
         self.chunk_map = None
         self.n_chunks = self._n_chunks
 
@@ -175,7 +173,6 @@ class WISEData:
         self.cluster_jobID_map = None
         self.clusterJob_chunk_map = None
         self.cluster_info_file = os.path.join(self.cluster_dir, 'cluster_info.pkl')
-        # self.n_cluster_jobs_per_chunk = 100
 
     @property
     def n_chunks(self):
@@ -585,49 +582,6 @@ class WISEData:
     def load_binned_lcs(self, service):
         return self._load_lightcurves(service)
 
-    # def _cache_chunk_binned_lightcurves_filename(self, chunk_number, service, jobID):
-    #     jobID_str = f"_{jobID}" if jobID else ''
-    #     fn = f"binned_lightcurves_{service}{self._split_chunk_key}{chunk_number}{jobID_str}.json"
-    #     return os.path.join(self._cache_photometry_dir, fn)
-    #
-    # def _save_chunk_binned_lcs(self, chunk_number, service, binned_lcs, jobID):
-    #     fn = self._cache_chunk_binned_lightcurves_filename(chunk_number, service, jobID)
-    #     logger.debug(f'saving to {fn}')
-    #     with open(fn, "w") as f:
-    #         json.dump(binned_lcs, f, indent=4)
-    #
-    # def _load_chunk_binned_lcs(self, chunk_number, service, jobID):
-    #     fn = self._cache_chunk_binned_lightcurves_filename(chunk_number, service, jobID)
-    #     with open(fn, "r") as f:
-    #         binned_lcs = json.load(f)
-    #     return binned_lcs, fn
-    #
-    # def binned_lightcurves_filename(self, service):
-    #     return os.path.join(self.lightcurve_dir, f"binned_lightcurves_{service}.json")
-    #
-    # def _combine_binned_lcs_perchunk(self, service):
-    #     for c in range(self.n_chunks):
-    #         logger.debug(f"chunk {c+1} of {self.n_chunks}")
-    #         dicts = list()
-    #         jobs = list(self.clusterJob_chunk_map.index[self.clusterJob_chunk_map.chunk_number == c])
-    #         for j in tqdm.tqdm(jobs, desc="loading files for jobs"):
-    #             try:
-    #                 lcs, fn = self._load_chunk_binned_lcs(c, service, j)
-    #                 dicts.append(lcs)
-    #                 if self.clear_unbinned_photometry_when_binning:
-    #                     os.remove(fn)
-    #             except FileNotFoundError:
-    #                 logger.warning(f"No file for {service}, chunk {c} job{j}")
-    #         d = dicts[0]
-    #         for dd in dicts[1:]:
-    #             d.update(dd)
-    #
-    #         self._save_chunk_binned_lcs(c, service, d, None)
-    #
-    # def load_binned_lcs(self, service):
-    #     with open(self.binned_lightcurves_filename(service), "r") as f:
-    #         return json.load(f)
-
     def _combine_lcs(self, service=None, chunk_number=None, remove=False, overwrite=False):
         if not service:
             logger.info("Combining all lightcuves collected with all services")
@@ -657,38 +611,6 @@ class WISEData:
                 lcs.update(ilcs)
 
         self._save_lightcurves(lcs, service=service, chunk_number=chunk_number, overwrite=overwrite)
-
-    # def _combine_binned_lcs(self, service, overwrite=False):
-    #     dicts = list()
-    #     for c in range(self.n_chunks):
-    #         try:
-    #             lcs, fn = self._load_chunk_binned_lcs(c, service, None)
-    #             dicts.append(lcs)
-    #             if self.clear_unbinned_photometry_when_binning:
-    #                 os.remove(fn)
-    #         except FileNotFoundError:
-    #             logger.warning(f"No file for {service}, chunk {c}")
-    #
-    #     d = None
-    #     if not overwrite:
-    #         try:
-    #             d = self.load_binned_lcs(service)
-    #             ii = 0
-    #         except FileNotFoundError as e:
-    #             logger.info(f"FileNotFoundError: {e}. Making new binned lightcurves.")
-    #             # d will still be None and set in the following if clause
-    #
-    #     if isinstance(d, type(None)):
-    #         d = dicts[0]
-    #         ii = 1
-    #
-    #     for dd in dicts[ii:]:
-    #         d.update(dd)
-    #
-    #     fn = self.binned_lightcurves_filename(service)
-    #     logger.info(f"saving final lightcurves under {fn}")
-    #     with open(fn, "w") as f:
-    #         json.dump(d, f, indent=4)
 
     # ----------------------------------------------------------------------------------- #
     # START using GATOR to get photometry        #
@@ -794,7 +716,6 @@ class WISEData:
                                                            clear=self.clear_unbinned_photometry_when_binning)
 
         if jobID:
-            # chunk_number = self.clusterJob_chunk_map.loc[jobID, 'chunk_number']
             _indices = np.where(self.cluster_jobID_map == jobID)[0]
 
         else:
@@ -814,7 +735,6 @@ class WISEData:
             binned_lcs[f"{int(parent_sample_idx)}_{wise_id}"] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
-        # self._save_chunk_binned_lcs(chunk_number, 'gator', binned_lcs, jobID)
         self._save_lightcurves(binned_lcs, service='gator', chunk_number=chunk_number, jobID=jobID)
 
     # ------------------------------------------ #
