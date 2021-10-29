@@ -167,6 +167,8 @@ class TestMIRFlareCatalogue(unittest.TestCase):
         for s in ['gator', 'tap']:
             logger.info(f"\nTesting {s.upper()}")
             wise_data.get_photometric_data(service=s, mag=True, flux=True)
+            logger.info(f" --- Test calculating metadata --- ")
+            wise_data.calculate_metadata(service=s)
             logger.info(f" --- Test plot lightcurves --- ")
             lcs = wise_data.load_binned_lcs(s)
             plot_id = list(lcs.keys())[10].split('_')[0]
