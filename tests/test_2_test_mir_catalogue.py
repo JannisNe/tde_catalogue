@@ -113,7 +113,9 @@ class WISEDataTestVersion(WISEData):
                          base_name=WISEDataTestVersion.base_name + name_ext,
                          parent_sample_class=CombinedSampleTestVersion)
 
-    def get_photometric_data(self, tables=None, perc=1, wait=0, service='tap', mag=True, flux=True):
+    def get_photometric_data(self, tables=None, perc=1, wait=0, service='tap', mag=True, flux=True,
+                             nthreads=100, chunks=None, cluster_jobs_per_chunk=0,
+                             overwrite=True, remove_chunks=True):
         if tables is None:
             tables = ['AllWISE Multiepoch Photometry Table']
         super(WISEDataTestVersion, self).get_photometric_data(tables, perc, wait, service, mag, flux)
