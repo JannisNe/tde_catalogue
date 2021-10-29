@@ -658,37 +658,37 @@ class WISEData:
 
         self._save_lightcurves(lcs, service=service, chunk_number=chunk_number, overwrite=overwrite)
 
-    def _combine_binned_lcs(self, service, overwrite=False):
-        dicts = list()
-        for c in range(self.n_chunks):
-            try:
-                lcs, fn = self._load_chunk_binned_lcs(c, service, None)
-                dicts.append(lcs)
-                if self.clear_unbinned_photometry_when_binning:
-                    os.remove(fn)
-            except FileNotFoundError:
-                logger.warning(f"No file for {service}, chunk {c}")
-
-        d = None
-        if not overwrite:
-            try:
-                d = self.load_binned_lcs(service)
-                ii = 0
-            except FileNotFoundError as e:
-                logger.info(f"FileNotFoundError: {e}. Making new binned lightcurves.")
-                # d will still be None and set in the following if clause
-
-        if isinstance(d, type(None)):
-            d = dicts[0]
-            ii = 1
-
-        for dd in dicts[ii:]:
-            d.update(dd)
-
-        fn = self.binned_lightcurves_filename(service)
-        logger.info(f"saving final lightcurves under {fn}")
-        with open(fn, "w") as f:
-            json.dump(d, f, indent=4)
+    # def _combine_binned_lcs(self, service, overwrite=False):
+    #     dicts = list()
+    #     for c in range(self.n_chunks):
+    #         try:
+    #             lcs, fn = self._load_chunk_binned_lcs(c, service, None)
+    #             dicts.append(lcs)
+    #             if self.clear_unbinned_photometry_when_binning:
+    #                 os.remove(fn)
+    #         except FileNotFoundError:
+    #             logger.warning(f"No file for {service}, chunk {c}")
+    #
+    #     d = None
+    #     if not overwrite:
+    #         try:
+    #             d = self.load_binned_lcs(service)
+    #             ii = 0
+    #         except FileNotFoundError as e:
+    #             logger.info(f"FileNotFoundError: {e}. Making new binned lightcurves.")
+    #             # d will still be None and set in the following if clause
+    #
+    #     if isinstance(d, type(None)):
+    #         d = dicts[0]
+    #         ii = 1
+    #
+    #     for dd in dicts[ii:]:
+    #         d.update(dd)
+    #
+    #     fn = self.binned_lightcurves_filename(service)
+    #     logger.info(f"saving final lightcurves under {fn}")
+    #     with open(fn, "w") as f:
+    #         json.dump(d, f, indent=4)
 
     # ----------------------------------------------------------------------------------- #
     # START using GATOR to get photometry        #
@@ -1070,7 +1070,7 @@ class WISEData:
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
         # self._save_chunk_binned_lcs(_chunk_number, 'tap', binned_lcs, jobID)
-        self._save_lightcurves(binned_lcs, service='tap', chunk_number=chunk_number, jobID=jobID)
+        self._save_lightcurves(binned_lcs, service='tap', chunk_number=chunk_number, jobID=jobID, overwrite=True)
 
     # ---------------------------------------- #
     # END using TAP to get photometry          #
@@ -1232,6 +1232,11 @@ class WISEData:
         with open(self.cluster_info_file, "rb") as f:
             self.cluster_jobID_map, self.clusterJob_chunk_map = pickle.load(f)
 
+    def clear_cluster_log_dir(self):
+        fns = os.listdir(self.cluster_log_dir)
+        for fn in fns:
+            os.remove(os.path.join(self.cluster_log_dir, fn))
+
     def _make_cluster_script(self, cluster_h, cluster_ram, tables, service):
         script_fn = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'bin_lightcurves.py')
 
@@ -1319,6 +1324,7 @@ class WISEData:
         # logger.info(f"Running on cluster with ID {self.job_id}")
 
     def run_cluster(self, cluster_cpu, cluster_h, cluster_ram, service):
+        self.clear_cluster_log_dir()
         self.submit_to_cluster(cluster_cpu, cluster_h, cluster_ram, tables=None, service=service)
         self.wait_for_job()
         for c in range(self.n_chunks):
@@ -1374,11 +1380,16 @@ class WISEData:
         for b in self.bands:
             try:
                 if plot_binned:
-                    ax.errorbar(lc.mean_mjd, lc[f"{b}_mean_{lum_key}"], yerr=lc[f"{b}_{lum_key}_rms"],
+                    ul_mask = np.array(lc[f"{b}_{lum_key}{self.upper_limit_key}"]).astype(bool)
+                    ax.errorbar(lc.mean_mjd[~ul_mask], lc[f"{b}{self.mean_key}_{lum_key}"][~ul_mask],
+                                yerr=lc[f"{b}_{lum_key}{self.rms_key}"][~ul_mask],
                                 label=b, ls='', marker='s', c=self.band_plot_colors[b], markersize=4,
                                 markeredgecolor='k', ecolor='k', capsize=2)
+                    ax.scatter(lc.mean_mjd[ul_mask], lc[f"{b}{self.mean_key}_{lum_key}"][ul_mask],
+                               marker='v', c=self.band_plot_colors[b], alpha=0.7, s=2)
                 if plot_unbinned:
-                    ax.errorbar(unbinned_lc.mjd, unbinned_lc[f"{b}_{lum_key}"], yerr=unbinned_lc[f"{b}_{lum_key}_error"],
+                    ax.errorbar(unbinned_lc.mjd, unbinned_lc[f"{b}_{lum_key}"],
+                                yerr=unbinned_lc[f"{b}_{lum_key}{self.error_key_ext}"],
                                 label=f"{b} unbinned", ls='', marker='o', c=self.band_plot_colors[b], markersize=4,
                                 alpha=0.3)
             except KeyError as e:
@@ -1459,15 +1470,15 @@ class WISEData:
 
     def _combine_metadata(self, service=None, chunk_number=None, remove=False, overwrite=False):
         if not service:
-            logger.info("Combining all lightcuves collected with all services")
+            logger.info("Combining all metadata collected with all services")
             itr = ['service', ['gator', 'tap']]
             kwargs = {}
         elif chunk_number is None:
-            logger.info(f"Combining all lightcurves collected with {service}")
+            logger.info(f"Combining all metadata collected with {service}")
             itr = ['chunk_number', range(self.n_chunks)]
             kwargs = {'service': service}
         elif chunk_number is not None:
-            logger.info(f"Combining all lightcurves collected eith {service} for chunk {chunk_number}")
+            logger.info(f"Combining all metadata collected with {service} for chunk {chunk_number}")
             itr = ['jobID',
                    list(self.clusterJob_chunk_map.index[self.clusterJob_chunk_map.chunk_number == chunk_number])]
             kwargs = {'service': service, 'chunk_number': chunk_number}
@@ -1490,20 +1501,39 @@ class WISEData:
     def _calculate_metadata(self, lcs):
         metadata = dict()
 
-        for ID, lc_dict in lcs.items():
+        for ID, lc_dict in tqdm.tqdm(lcs.items(), desc='calculating metadata', total=len(lcs)):
             imetadata = dict()
             lc = pd.DataFrame.from_dict(lc_dict)
             for band in self.bands:
                 for lum_key in [self.mag_key_ext, self.flux_key_ext]:
-                    k = f"{band}_max_dif{lum_key}"
+                    llumkey = f"{band}{self.mean_key}{lum_key}"
+                    difk = f"{band}_max_dif{lum_key}"
+                    Nk = f"{band}_N_datapoints{lum_key}"
+                    dtk = f"{band}_max_deltat{lum_key}"
+                    ul_key = f'{band}{lum_key}{self.upper_limit_key}'
                     try:
-                        llumkey = f"{band}{self.mean_key}{lum_key}"
-                        imin = lc[llumkey].min()
-                        imax = lc[llumkey].max()
-                        if lum_key == self.mag_key_ext:
-                            imetadata[k] = imax - imin
+                        ilc = lc[~np.array(lc[ul_key]).astype(bool)]
+                        imetadata[Nk] = len(ilc)
+
+                        if len(ilc) > 0:
+                            imin = ilc[llumkey].min()
+                            imax = ilc[llumkey].max()
+
+                            if lum_key == self.mag_key_ext:
+                                imetadata[difk] = imax - imin
+                            else:
+                                imetadata[difk] = imax / imin
+
+                            if len(ilc) == 1:
+                                imetadata[dtk] = 0
+                            else:
+                                mjds = np.array(ilc.mean_mjd).astype(float)
+                                dt = mjds[1:] - mjds[:-1]
+                                imetadata[dtk] = max(dt)
+
                         else:
-                            imetadata[k] = imax / imin
+                            imetadata[difk] = np.nan
+                            imetadata[dtk] = np.nan
                     except KeyError:
                         pass
 
