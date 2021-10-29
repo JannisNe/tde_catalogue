@@ -482,7 +482,7 @@ class WISEData:
     ###################################
 
     def get_photometric_data(self, tables=None, perc=1, wait=5, service=None, mag=True, flux=False, nthreads=100,
-                             chunks=None, cluster_jobs_per_chunk=0):
+                             chunks=None, cluster_jobs_per_chunk=0, overwrite=False, remove_chunks=False):
         """
         Load photometric data from the IRSA server for the matched sample
         :param cluster_jobs_per_chunk: int, if greater than zero uses the DESY cluster
@@ -539,7 +539,7 @@ class WISEData:
 
         if not cluster_jobs_per_chunk:
             self._select_individual_lightcurves_and_bin(service=service, chunks=chunks)
-        self._combine_binned_lcs(service)
+        self._combine_lcs(service=service, overwrite=True, remove=remove_chunks)
 
     def _lightcurve_filename(self, service, chunk_number=None, jobID=None):
         if (chunk_number is None) and (jobID is None):
