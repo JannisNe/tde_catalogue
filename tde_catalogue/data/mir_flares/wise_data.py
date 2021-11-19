@@ -517,19 +517,18 @@ class WISEData:
         if cluster_jobs_per_chunk:
             self.n_cluster_jobs_per_chunk = cluster_jobs_per_chunk
 
-            cluster_time_s = len(self.parent_sample.df) / self._n_chunks / self.n_cluster_jobs_per_chunk
+            cluster_time_s = max(len(self.parent_sample.df) / self._n_chunks / self.n_cluster_jobs_per_chunk, 59*60)
             if cluster_time_s > 24 * 3600:
                 raise ValueError(f"cluster time per job would be longer than 24h! "
                                  f"Choose more than {self.n_cluster_jobs_per_chunk} jobs per chunk!")
 
             cluster_time = time.strftime('%H:%M:%S', time.gmtime(cluster_time_s))
-            cluster_args = [1, cluster_time, '10', service]
+            cluster_args = [1, cluster_time, '10G', service]
 
         if service == 'tap':
             self._query_for_photometry(tables, chunks, wait, mag, flux, nthreads)
             if cluster_jobs_per_chunk:
-                pass
-                # self.run_cluster(*cluster_args)
+                self.run_cluster(*cluster_args)
 
         elif service == 'gator':
             if cluster_jobs_per_chunk:
@@ -539,7 +538,11 @@ class WISEData:
 
         if not cluster_jobs_per_chunk:
             self._select_individual_lightcurves_and_bin(service=service, chunks=chunks)
+            for c in chunks:
+                self.calculate_metadata(service=service, chunk_number=c, overwrite=True)
+
         self._combine_lcs(service=service, overwrite=True, remove=remove_chunks)
+        self._combine_metadata(service=service, overwrite=True, remove=remove_chunks)
 
     def _lightcurve_filename(self, service, chunk_number=None, jobID=None):
         if (chunk_number is None) and (jobID is None):
@@ -766,12 +769,18 @@ class WISEData:
         for k in keys:
             q += f'{db_name}.{k}, '
         q += f'\n\tmine.{self._tap_wise_id_key}, mine.{self._tap_orig_id_key} \n'
-        q += f'FROM\n\t{db_name} \n'
-        q += f'INNER JOIN\n\tTAP_UPLOAD.ids AS mine ON {db_name}.{id_key} = mine.WISE_id \n'
+        q += f'FROM\n\tTAP_UPLOAD.ids AS mine \n'
+        q += f'RIGHT JOIN\n\t {db_name} \n'
         q += 'WHERE \n'
-        for c in self.constraints:
-            q += f'\t{db_name}.{c} and \n'
-        q = q.strip(" and \n")
+        q += f"\tCONTAINS(POINT('J2000',{db_name}.ra,{db_name}.dec)," \
+             f"CIRCLE('J2000',mine.ra,mine.dec,0.00083))=1 "
+        if len(self.constraints) > 0:
+            q += ' AND (\n'
+            for c in self.constraints:
+                q += f'\t{db_name}.{c} AND \n'
+            q = q.strip(" AND \n")
+            q += '\t)'
+
         logger.debug(f"\n{q}")
         return q
 
@@ -784,9 +793,16 @@ class WISEData:
         sel = self.parent_sample.df[np.array(m) & ~ self._no_allwise_source]
         wise_id_sel = np.array(sel[self.parent_wise_source_id_key]).astype(int)
         id_sel = np.array(sel.index).astype(int)
+        ra_sel = np.array(sel[self.parent_sample.default_keymap['ra']]).astype(float)
+        dec_sel = np.array(sel[self.parent_sample.default_keymap['dec']]).astype(float)
         del sel
 
-        upload_table = Table({self._tap_wise_id_key: wise_id_sel, self._tap_orig_id_key: id_sel})
+        upload_table = Table({
+            self._tap_wise_id_key: wise_id_sel,
+            self._tap_orig_id_key: id_sel,
+            'ra': ra_sel,
+            'dec': dec_sel
+        })
         logger.debug(f"{chunk_number}th query of {table_name}: uploading {len(upload_table)} objects.")
         qstring = self._get_photometry_query_string(t, mag, flux)
 
@@ -847,6 +863,9 @@ class WISEData:
                 t, i = self.queue.get(block=False)
             except queue.Empty:
                 logger.debug("No more tasks, exiting")
+                break
+            except AttributeError:
+                logger.debug(f"No more queue. exiting")
                 break
 
             job = self.tap_jobs[t][i]
@@ -1117,6 +1136,8 @@ class WISEData:
                 time.sleep(30)
                 i += 1
 
+            logger.info('cluster is done')
+
         else:
             logger.info(f'No Job ID!')
 
@@ -1246,18 +1267,19 @@ class WISEData:
 
         self._make_cluster_script(cluster_h, cluster_ram, tables, service)
 
-        # process = subprocess.Popen(submit_cmd, stdout=subprocess.PIPE, shell=True)
-        # msg = process.stdout.read().decode()
-        # logger.info(str(msg))
-        # self.job_id = int(str(msg).split('job-array')[1].split('.')[0])
-        # logger.info(f"Running on cluster with ID {self.job_id}")
+        process = subprocess.Popen(submit_cmd, stdout=subprocess.PIPE, shell=True)
+        msg = process.stdout.read().decode()
+        logger.info(str(msg))
+        self.job_id = int(str(msg).split('job-array')[1].split('.')[0])
+        logger.info(f"Running on cluster with ID {self.job_id}")
 
     def run_cluster(self, cluster_cpu, cluster_h, cluster_ram, service):
         self.clear_cluster_log_dir()
         self.submit_to_cluster(cluster_cpu, cluster_h, cluster_ram, tables=None, service=service)
         self.wait_for_job()
         for c in range(self.n_chunks):
-            self._combine_lcs(service, chunk_number=c, remove=True)
+            self._combine_lcs(service, chunk_number=c, remove=True, overwrite=True)
+            self._combine_metadata(service, chunk_number=c, remove=True, overwrite=True)
 
     # ---------------------------------------------------- #
     # END using cluster for downloading and binning        #
@@ -1451,14 +1473,15 @@ class WISEData:
                         if len(ilc) > 0:
                             imin = ilc[llumkey].min()
                             imax = ilc[llumkey].max()
-                            imin_rms = ilc[errkey].min()
+                            imin_rms_ind = ilc[errkey].argmin()
+                            imin_rms = ilc[errkey].iloc[imin_rms_ind]
 
                             if lum_key == self.mag_key_ext:
                                 imetadata[difk] = imax - imin
+                                imetadata[rmsk] = imin_rms
                             else:
                                 imetadata[difk] = imax / imin
-
-                            imetadata[rmsk] = imin_rms
+                                imetadata[rmsk] = imin_rms / ilc[llumkey].iloc[imin_rms_ind]
 
                             if len(ilc) == 1:
                                 imetadata[dtk] = 0
@@ -1470,8 +1493,8 @@ class WISEData:
                         else:
                             imetadata[difk] = np.nan
                             imetadata[dtk] = np.nan
-                    except KeyError:
-                        pass
+                    except KeyError as e:
+                        print(e)
 
             metadata[ID] = imetadata
         return metadata
@@ -1500,7 +1523,7 @@ if __name__ == '__main__':
     #wise_data.match_all_chunks()
     match_time = time.time()
     if cfg.phot:
-        wise_data.get_photometric_data(tables='NEOWISE-R Single Exposure (L1b) Source Table',
+        wise_data.get_photometric_data(tables=None,
                                        perc=cfg.perc, wait=10, service='tap', mag=True, flux=False,
                                        nthreads=100, cluster_jobs_per_chunk=500)
     phot_time = time.time()
