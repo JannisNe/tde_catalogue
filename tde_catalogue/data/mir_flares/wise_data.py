@@ -3,6 +3,7 @@ import multiprocessing as mp
 import pandas as pd
 import numpy as np
 import pyvo as vo
+from astropy.io import ascii
 import astropy.units as u
 from astropy.table import Table
 import matplotlib.pyplot as plt
@@ -36,6 +37,7 @@ class WISEData:
 
     bands = ['W1', 'W2']
     flux_key_ext = "_flux"
+    flux_density_key_ext = "_flux_density"
     mag_key_ext = "_mag"
     error_key_ext = "_error"
     band_plot_colors = {'W1': 'r', 'W2': 'b'}
@@ -74,6 +76,22 @@ class WISEData:
             }
         }
     }
+
+    # zero points come from https://wise2.ipac.caltech.edu/docs/release/allsky/expsup/sec4_4h.html#conv2flux
+    magnitude_zeropoints = {
+        'F_nu': {
+            'W1': 309.54 * u.Jy,
+            'W2': 171.787 * u.Jy
+        },
+        'Fstar_nu': {
+            'W1': 306.682 * u.Jy,
+            'W2': 170.663 * u.Jy
+        }
+    }
+
+    _this_dir = os.path.dirname(__file__)
+    magnitude_zeropoints_corrections = ascii.read(f'{_this_dir}/wise_flux_conversion_correction.dat',
+                                                  delimiter='\t').to_pandas()
 
     constraints = [
         "nb < 2",
@@ -641,7 +659,7 @@ class WISEData:
 
         _additional_keys = "," + ",".join(_additional_keys_list)
         _deci_mask = self.chunk_map == chunk_number
-        _mask = _deci_mask & (~self._no_allwise_source)
+        _mask = _deci_mask #& (~self._no_allwise_source)
 
         res = self._match_to_wise(
             in_filename=_infile,
@@ -660,7 +678,11 @@ class WISEData:
 
     def _gator_photometry_worker_thread(self):
         while True:
-            args = self.queue.get()
+            try:
+                args = self.queue.get()
+            except AttributeError:
+                logger.debug('No more tasks, exiting')
+                break
             logger.debug(f"{args}")
             self._thread_query_photometry_gator(*args)
             self.queue.task_done()
@@ -731,10 +753,25 @@ class WISEData:
             lum_keys = [c for c in lightcurves.columns if ("W1" in c) or ("W2" in c)]
             lightcurve = selected_data[['mjd'] + lum_keys]
             binned_lc = self.bin_lightcurve(lightcurve)
+            binned_lc = self.add_flux_density(
+                binned_lc,
+                mag_key=f'{self.mean_key}{self.mag_key_ext}',
+                emag_key=f'{self.mag_key_ext}{self.rms_key}',
+                mag_ul_key=f'{self.mag_key_ext}{self.upper_limit_key}',
+                f_key=f'{self.mean_key}{self.flux_density_key_ext}',
+                ef_key=f'{self.flux_density_key_ext}{self.rms_key}',
+                f_ul_key=f'{self.flux_density_key_ext}{self.upper_limit_key}'
+            )
+
             if self.parent_sample:
                 wise_id = self.parent_sample.df.loc[int(parent_sample_idx), self.parent_wise_source_id_key]
             else:
-                wise_id = None
+                wise_id = np.nan
+            # print(wise_id, type(wise_id), parent_sample_idx)
+            if not isinstance(wise_id, str):
+                if not np.isnan(wise_id):
+                    wise_id = int(wise_id)
+
             binned_lcs[f"{int(parent_sample_idx)}_{wise_id}"] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
@@ -1014,6 +1051,15 @@ class WISEData:
 
             ID = lightcurve[self._tap_wise_id_key].iloc[0]
             binned_lc = self.bin_lightcurve(lightcurve)
+            binned_lc = self.add_flux_density(
+                binned_lc,
+                mag_key=f'{self.mean_key}{self.mag_key_ext}',
+                emag_key=f'{self.mag_key_ext}{self.rms_key}',
+                mag_ul_key=f'{self.mag_key_ext}{self.upper_limit_key}',
+                f_key=f'{self.mean_key}{self.flux_density_key_ext}',
+                ef_key=f'{self.flux_density_key_ext}{self.rms_key}',
+                f_ul_key=f'{self.flux_density_key_ext}{self.upper_limit_key}'
+            )
             binned_lcs[f"{int(parent_sample_entry_id)}_{int(ID)}"] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
@@ -1045,7 +1091,7 @@ class WISEData:
             r['mean_mjd'] = np.median(lightcurve.mjd[epoch_mask])
 
             for b in self.bands:
-                for lum_ext in [self.flux_key_ext, self.mag_key_ext]:
+                for lum_ext in [self.flux_key_ext, self.mag_key_ext, self.flux_density_key_ext]:
                     try:
                         f = lightcurve[f"{b}{lum_ext}"][epoch_mask]
                         e = lightcurve[f"{b}{lum_ext}{self.error_key_ext}"][epoch_mask]
@@ -1072,6 +1118,87 @@ class WISEData:
             binned_lc = binned_lc.append(r, ignore_index=True)
 
         return binned_lc
+
+    # ----------------------------------------------------------------------------------- #
+    # START converting to flux densities                   #
+    # ---------------------------------------------------- #
+
+    def find_color_correction(self, w1_minus_w2):
+        w1_minus_w2 = np.atleast_1d(w1_minus_w2)
+        c = pd.DataFrame(columns=self.magnitude_zeropoints_corrections.columns)
+        power_law_values = self.magnitude_zeropoints_corrections.loc[8:16]['[W1 - W2]']
+        for w1mw2 in w1_minus_w2:
+            dif = power_law_values - w1mw2
+            i = abs(dif).argmin()
+            c = c.append(self.magnitude_zeropoints_corrections.loc[i])
+        return c
+
+    def vegamag_to_flux_density(self, vegamag, band, unit='mJy', color_correction=None):
+        if not isinstance(color_correction, type(None)):
+            key = f'f_c({band})'
+            if key in color_correction:
+                color_correction = color_correction[key]
+                if len(color_correction) != len(vegamag):
+                    raise ValueError(f"\nLength of color corrections: {len(color_correction)}:\n{color_correction}; "
+                                     f"\nLentgh of mags: {len(vegamag)}: \n{vegamag}")
+            else:
+                raise NotImplementedError(color_correction)
+
+        else:
+            color_correction = 1
+
+        color_correction = np.array(color_correction)
+        vegamag = np.array(vegamag)
+        fd = self.magnitude_zeropoints['F_nu'][band].to(unit).value / color_correction * 10 ** (-vegamag / 2.5)
+        if len(fd) != len(vegamag):
+            raise ValueError(f"\nLength of flux densities: {len(fd)}:\n{fd}; "
+                             f"\nLentgh of mags: {len(vegamag)}: \n{vegamag}")
+
+        return np.array(list(fd))
+
+    def add_flux_density(self, lightcurve,
+                         mag_key, emag_key, mag_ul_key,
+                         f_key, ef_key, f_ul_key):
+
+        if isinstance(lightcurve, dict):
+            lightcurve = pd.DataFrame.from_dict(lightcurve, orient='columns')
+
+        w1_minus_w2 = lightcurve[f"W1{mag_key}"] - lightcurve[f"W2{mag_key}"]
+        f_c = self.find_color_correction(w1_minus_w2)
+
+        for b in self.bands:
+            mags = lightcurve[f'{b}{mag_key}']
+            emags = lightcurve[f'{b}{emag_key}']
+
+            flux_densities = self.vegamag_to_flux_density(mags, band=b)
+            upper_eflux_densities = self.vegamag_to_flux_density(mags - emags, band=b, color_correction=f_c)
+            lower_eflux_densities = self.vegamag_to_flux_density(mags + emags, band=b, color_correction=f_c)
+            eflux_densities = upper_eflux_densities - lower_eflux_densities
+
+            lightcurve[f'{b}{f_key}']  = flux_densities
+            lightcurve[f'{b}{ef_key}'] = eflux_densities
+            if mag_ul_key:
+                lightcurve[f'{b}{f_ul_key}'] = lightcurve[f'{b}{mag_ul_key}']
+
+        return lightcurve
+
+    def _add_flux_densities_to_saved_lightcurves(self, service):
+        lcs = self.load_binned_lcs(service=service)
+        for i, lc in tqdm.tqdm(lcs.items(), desc='adding flux densities'):
+            lcs[i] = self.add_flux_density(
+                lc,
+                mag_key=f'{self.mean_key}{self.mag_key_ext}',
+                emag_key=f'{self.mag_key_ext}{self.rms_key}',
+                mag_ul_key=f'{self.mag_key_ext}{self.upper_limit_key}',
+                f_key=f'{self.mean_key}{self.flux_density_key_ext}',
+                ef_key=f'{self.flux_density_key_ext}{self.rms_key}',
+                f_ul_key=f'{self.flux_density_key_ext}{self.upper_limit_key}'
+            ).to_dict()
+        self._save_lightcurves(lcs, service=service, overwrite=True)
+
+    # ---------------------------------------------------- #
+    # END converting to flux densities                     #
+    # ----------------------------------------------------------------------------------- #
 
     # ----------------------------------------------------------------------------------- #
     # START using cluster for downloading and binning      #
@@ -1294,7 +1421,7 @@ class WISEData:
     #####################################
 
     def plot_lc(self, parent_sample_idx=None, wise_id=None, interactive=False, fn=None, ax=None, save=True,
-                plot_unbinned=False, plot_binned=True, lum_key='flux', service='tap', **kwargs):
+                plot_unbinned=False, plot_binned=True, lum_key='flux_density', service='tap', **kwargs):
 
         logger.debug(f"loading binned lightcurves")
         lcs = self.load_binned_lcs(service)
@@ -1302,7 +1429,9 @@ class WISEData:
         _get_unbinned_lcs_fct = self._get_unbinned_lightcurves if service == 'tap' else self._get_unbinned_lightcurves_gator
 
         if not wise_id and (parent_sample_idx is not None):
-            wise_id = int(self.parent_sample.df.loc[int(parent_sample_idx), self.parent_wise_source_id_key])
+            wise_id = self.parent_sample.df.loc[int(parent_sample_idx), self.parent_wise_source_id_key]
+            if isinstance(wise_id, float) and not np.isnan(wise_id):
+                wise_id = int(wise_id)
             logger.debug(f"{wise_id} for {parent_sample_idx}")
 
         if (wise_id is not None) and not parent_sample_idx:
