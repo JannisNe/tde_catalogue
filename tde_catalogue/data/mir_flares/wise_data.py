@@ -6,6 +6,8 @@ import pyvo as vo
 from astropy.io import ascii
 import astropy.units as u
 from astropy.table import Table
+from astropy import constants
+from astropy.cosmology import Planck18
 import matplotlib.pyplot as plt
 
 from tde_catalogue import main_logger, cache_dir, plots_dir, output_dir, BASHFILE
@@ -39,6 +41,7 @@ class WISEData:
     flux_key_ext = "_flux"
     flux_density_key_ext = "_flux_density"
     mag_key_ext = "_mag"
+    luminosity_key_ext = "_luminosity"
     error_key_ext = "_error"
     band_plot_colors = {'W1': 'r', 'W2': 'b'}
 
@@ -93,6 +96,11 @@ class WISEData:
     magnitude_zeropoints_corrections = ascii.read(f'{_this_dir}/wise_flux_conversion_correction.dat',
                                                   delimiter='\t').to_pandas()
 
+    band_wavelengths = {
+        'W1': 3.368 * 1e-6 * u.m,
+        'W2': 4.618 * 1e-6 * u.m
+    }
+
     constraints = [
         "nb < 2",
         "na < 1",
@@ -103,8 +111,8 @@ class WISEData:
     ]
 
     def __init__(self,
-                 min_sep_arcsec=10,
-                 n_chunks=2,
+                 min_sep_arcsec=8,
+                 n_chunks=20,
                  base_name=base_name,
                  parent_sample_class=SDSSPhotometricGalaxies):
         """
@@ -226,7 +234,9 @@ class WISEData:
             parent_sample_index = np.where(self.parent_sample.df[self.parent_wise_source_id_key] == int(wise_id))[0]
             logger.debug(f"wise ID {wise_id} at index {parent_sample_index}")
 
-        _chunk_number = int(self.chunk_map[int(parent_sample_index)])
+        loc = self.parent_sample.df.loc[int(parent_sample_index)].name
+        iloc = self.parent_sample.df.index.get_loc(loc)
+        _chunk_number = int(self.chunk_map[int(iloc)])
         logger.debug(f"chunk number is {_chunk_number} for {parent_sample_index}")
         return _chunk_number
 
@@ -626,10 +636,11 @@ class WISEData:
             kw[itr[0]] = i
             kw['remove'] = remove
             ilcs = self._load_lightcurves(**kw)
-            if isinstance(lcs, type(None)):
-                lcs = dict(ilcs)
-            else:
-                lcs.update(ilcs)
+            if not isinstance(ilcs, type(None)):
+                if isinstance(lcs, type(None)):
+                    lcs = dict(ilcs)
+                else:
+                    lcs.update(ilcs)
 
         self._save_lightcurves(lcs, service=service, chunk_number=chunk_number, overwrite=overwrite)
 
@@ -763,16 +774,16 @@ class WISEData:
                 f_ul_key=f'{self.flux_density_key_ext}{self.upper_limit_key}'
             )
 
-            if self.parent_sample:
-                wise_id = self.parent_sample.df.loc[int(parent_sample_idx), self.parent_wise_source_id_key]
-            else:
-                wise_id = np.nan
-            # print(wise_id, type(wise_id), parent_sample_idx)
-            if not isinstance(wise_id, str):
-                if not np.isnan(wise_id):
-                    wise_id = int(wise_id)
+            # if self.parent_sample:
+            #     wise_id = self.parent_sample.df.loc[int(parent_sample_idx), self.parent_wise_source_id_key]
+            # else:
+            #     wise_id = np.nan
+            # # print(wise_id, type(wise_id), parent_sample_idx)
+            # if not isinstance(wise_id, str):
+            #     if not np.isnan(wise_id):
+            #         wise_id = int(wise_id)
 
-            binned_lcs[f"{int(parent_sample_idx)}_{wise_id}"] = binned_lc.to_dict()
+            binned_lcs[f"{int(parent_sample_idx)}"] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
         self._save_lightcurves(binned_lcs, service='gator', chunk_number=chunk_number, jobID=jobID, overwrite=True)
@@ -805,12 +816,12 @@ class WISEData:
         q = 'SELECT \n\t'
         for k in keys:
             q += f'{db_name}.{k}, '
-        q += f'\n\tmine.{self._tap_wise_id_key}, mine.{self._tap_orig_id_key} \n'
+        q += f'\n\tmine.{self._tap_orig_id_key} \n'
         q += f'FROM\n\tTAP_UPLOAD.ids AS mine \n'
-        q += f'RIGHT JOIN\n\t {db_name} \n'
+        q += f'RIGHT JOIN\n\t{db_name} \n'
         q += 'WHERE \n'
         q += f"\tCONTAINS(POINT('J2000',{db_name}.ra,{db_name}.dec)," \
-             f"CIRCLE('J2000',mine.ra,mine.dec,0.00083))=1 "
+             f"CIRCLE('J2000',mine.ra_in,mine.dec_in,0.00083))=1 "
         if len(self.constraints) > 0:
             q += ' AND (\n'
             for c in self.constraints:
@@ -827,18 +838,18 @@ class WISEData:
         m = self.chunk_map == i
 
         # if perc is smaller than one select only a subset of wise IDs
-        sel = self.parent_sample.df[np.array(m) & ~ self._no_allwise_source]
-        wise_id_sel = np.array(sel[self.parent_wise_source_id_key]).astype(int)
+        sel = self.parent_sample.df[np.array(m)]
+        # wise_id_sel = np.array(sel[self.parent_wise_source_id_key]).astype(int)
         id_sel = np.array(sel.index).astype(int)
         ra_sel = np.array(sel[self.parent_sample.default_keymap['ra']]).astype(float)
         dec_sel = np.array(sel[self.parent_sample.default_keymap['dec']]).astype(float)
         del sel
 
         upload_table = Table({
-            self._tap_wise_id_key: wise_id_sel,
+            # self._tap_wise_id_key: wise_id_sel,
             self._tap_orig_id_key: id_sel,
-            'ra': ra_sel,
-            'dec': dec_sel
+            'ra_in': ra_sel,
+            'dec_in': dec_sel
         })
         logger.debug(f"{chunk_number}th query of {table_name}: uploading {len(upload_table)} objects.")
         qstring = self._get_photometry_query_string(t, mag, flux)
@@ -875,15 +886,20 @@ class WISEData:
         _job = self.tap_jobs[t][i]
         # Sometimes a connection Error occurs.
         # In that case try again until job.wait() exits normally
+        _ntries = 10
         while True:
             try:
                 _job.wait()
                 break
             except vo.dal.exceptions.DALServiceError as e:
+                msg = f"{i}th query of {t}: DALServiceError: {e}; trying again in 6 min"
+                if _ntries < 10:
+                    msg += f' ({_ntries} tries left)'
+
+                logger.warning(msg)
+                time.sleep(60 * 6)
                 if '404 Client Error: Not Found for url' in str(e):
-                    raise vo.dal.exceptions.DALServiceError(f'{i}th query of {t}: {e}')
-                else:
-                    logger.warning(f"{i}th query of {t}: DALServiceError: {e}")
+                    _ntries -= 1
 
         logger.info(f'{i}th query of {t}: Done!')
         lightcurve = _job.fetch_result().to_table().to_pandas()
@@ -907,16 +923,25 @@ class WISEData:
 
             job = self.tap_jobs[t][i]
 
+            _ntries = 10
             while True:
                 try:
                     job._update(timeout=600)
                     phase = job._job.phase
                     break
                 except vo.dal.exceptions.DALServiceError as e:
+                    msg = f"{i}th query of {t}: DALServiceError: {e}; trying again in 6 min"
+                    if _ntries < 10:
+                        msg += f' ({_ntries} tries left)'
+
+                    logger.warning(msg)
+                    time.sleep(60 * 6)
                     if '404 Client Error: Not Found for url' in str(e):
-                        raise vo.dal.exceptions.DALServiceError(f'{i}th query of {t}: {e}')
-                    else:
-                        logger.warning(f"{i}th query of {t}: DALServiceError: {e}; try again")
+                        _ntries -= 1
+                    # if '404 Client Error: Not Found for url' in str(e):
+                    #     raise vo.dal.exceptions.DALServiceError(f'{i}th query of {t}: {e}')
+                    # else:
+                    #     logger.warning(f"{i}th query of {t}: DALServiceError: {e}; try again")
 
             if phase in self.running_tap_phases:
                 self.queue.put((t, i))
@@ -1049,7 +1074,7 @@ class WISEData:
                 logger.warning(f"No data for {parent_sample_entry_id}")
                 continue
 
-            ID = lightcurve[self._tap_wise_id_key].iloc[0]
+            # ID = lightcurve[self._tap_wise_id_key].iloc[0]
             binned_lc = self.bin_lightcurve(lightcurve)
             binned_lc = self.add_flux_density(
                 binned_lc,
@@ -1060,10 +1085,9 @@ class WISEData:
                 ef_key=f'{self.flux_density_key_ext}{self.rms_key}',
                 f_ul_key=f'{self.flux_density_key_ext}{self.upper_limit_key}'
             )
-            binned_lcs[f"{int(parent_sample_entry_id)}_{int(ID)}"] = binned_lc.to_dict()
+            binned_lcs[f"{int(parent_sample_entry_id)}"] = binned_lc.to_dict()
 
         logger.debug(f"chunk {chunk_number}: saving {len(binned_lcs.keys())} binned lcs")
-        # self._save_chunk_binned_lcs(_chunk_number, 'tap', binned_lcs, jobID)
         self._save_lightcurves(binned_lcs, service='tap', chunk_number=chunk_number, jobID=jobID, overwrite=True)
 
     # ---------------------------------------- #
@@ -1134,6 +1158,19 @@ class WISEData:
         return c
 
     def vegamag_to_flux_density(self, vegamag, band, unit='mJy', color_correction=None):
+        """
+        This converts the detector level brightness m in Mag_vega to a flux density F
+
+                    F = (F_nu / f_c) * 10 ^ (-m / 2.5)
+
+        where F_nu is the zeropoint flux for the corresponding band and f_c a color correction factor.
+        :param vegamag: float or ndarray
+        :param band: str
+        :param unit: str, unit to convert the flux density to
+        :param color_correction: float or ndarray or dict thereof, the colorcorection factor,
+            if dict the keys have to be 'f_c("band")'
+        :return: ndarray
+        """
         if not isinstance(color_correction, type(None)):
             key = f'f_c({band})'
             if key in color_correction:
@@ -1158,13 +1195,16 @@ class WISEData:
 
     def add_flux_density(self, lightcurve,
                          mag_key, emag_key, mag_ul_key,
-                         f_key, ef_key, f_ul_key):
+                         f_key, ef_key, f_ul_key, do_color_correction=False):
 
         if isinstance(lightcurve, dict):
             lightcurve = pd.DataFrame.from_dict(lightcurve, orient='columns')
 
-        w1_minus_w2 = lightcurve[f"W1{mag_key}"] - lightcurve[f"W2{mag_key}"]
-        f_c = self.find_color_correction(w1_minus_w2)
+        if do_color_correction:
+            w1_minus_w2 = lightcurve[f"W1{mag_key}"] - lightcurve[f"W2{mag_key}"]
+            f_c = self.find_color_correction(w1_minus_w2)
+        else:
+            f_c = None
 
         for b in self.bands:
             mags = lightcurve[f'{b}{mag_key}']
@@ -1198,6 +1238,79 @@ class WISEData:
 
     # ---------------------------------------------------- #
     # END converting to flux densities                     #
+    # ----------------------------------------------------------------------------------- #
+
+    # ----------------------------------------------------------------------------------- #
+    # START converting to luminosity                       #
+    # ---------------------------------------------------- #
+
+    def luminosity_from_flux_density(self, flux_density, band, distance=None, redshift=None,
+                                     unit='erg s-1', flux_density_unit='mJy'):
+        """
+        Converts a flux density into a luminosity
+        :param flux_density: float or ndarray
+        :param band: str
+        :param distance: astropy.Quantity, distance to source, if not given will use luminosity distance from redshift
+        :param redshift: float, redshift to use when calculating luminosity distance
+        :param unit: str or astropy.unit, unit in which to give the luminosity, default is erg s-1 sm-2
+        :param flux_density_unit: str or astropy.unit, unit in which the flux density is given, default is mJy
+        :return: float or ndarray
+        """
+
+        if not distance:
+            if not redshift:
+                raise ValueError('Either redshift or distance has to be given!')
+            else:
+                distance = Planck18.luminosity_distance(float(redshift))
+
+        F_nu = np.array(flux_density) * u.Unit(flux_density_unit) * 4 * np.pi * distance ** 2
+        nu = constants.c / self.band_wavelengths[band]
+        luminosity = F_nu * nu
+        return luminosity.to(unit).value
+
+    def _add_luminosity(self, lightcurve, f_key, ef_key, f_ul_key, lum_key, elum_key, lum_ul_key, **lum_kwargs):
+        for band in self.bands:
+            fd = lightcurve[band + f_key]
+            fd_e = lightcurve[band + ef_key]
+            l = self.luminosity_from_flux_density(fd, band, **lum_kwargs)
+            el = self.luminosity_from_flux_density(fd_e, band, **lum_kwargs)
+            lightcurve[band + lum_key] = l
+            lightcurve[band + elum_key] = el
+            lightcurve[band + lum_ul_key] = lightcurve[band + f_ul_key]
+        return lightcurve
+
+    def _add_luminosity_to_saved_lightcurves(self, service, redshift_key=None, distance_key=None):
+
+        if (not redshift_key) and (not distance_key):
+            raise ValueError('Either distance key or redshift key has to be given!')
+
+        lcs = self.load_binned_lcs(service=service)
+        for i, lc in tqdm.tqdm(lcs.items(), desc='adding luminosities'):
+            parent_sample_idx = int(i.split('_')[0])
+            info = self.parent_sample.df.loc[parent_sample_idx]
+
+            if distance_key:
+                distance = info[distance_key]
+                redshift = None
+            else:
+                distance = None
+                redshift = info[redshift_key]
+
+            lcs[i] = self._add_luminosity(
+                pd.DataFrame.from_dict(lc),
+                f_key     = self.mean_key + self.flux_density_key_ext,
+                ef_key    = self.flux_density_key_ext + self.rms_key,
+                f_ul_key  = self.flux_density_key_ext + self.upper_limit_key,
+                lum_key   = self.mean_key + self.luminosity_key_ext,
+                elum_key  = self.luminosity_key_ext + self.rms_key,
+                lum_ul_key= self.luminosity_key_ext + self.upper_limit_key,
+                redshift  = redshift,
+                distance  = distance
+            ).to_dict()
+        self._save_lightcurves(lcs, service=service, overwrite=True)
+
+    # ---------------------------------------------------- #
+    # END converting to luminosity                         #
     # ----------------------------------------------------------------------------------- #
 
     # ----------------------------------------------------------------------------------- #
@@ -1375,9 +1488,13 @@ class WISEData:
         cmd = "chmod +x " + self.submit_file
         os.system(cmd)
 
-    def submit_to_cluster(self, cluster_cpu, cluster_h, cluster_ram, tables, service):
-
-        self._save_cluster_info()
+    def submit_to_cluster(self, cluster_cpu, cluster_h, cluster_ram, tables, service, single_chunk=None):
+        if isinstance(single_chunk, type(None)):
+            ids = f'1-{self.n_chunks*self.n_cluster_jobs_per_chunk}'
+        else:
+            _start_id = int(single_chunk*self.n_cluster_jobs_per_chunk) + 1
+            _end_id = int(_start_id + self.n_cluster_jobs_per_chunk)
+            ids = f'{_start_id}-{_end_id}'
 
         parentsample_class_pickle = os.path.join(self.cluster_dir, 'parentsample_class.pkl')
         logger.debug(f"pickling parent sample class to {parentsample_class_pickle}")
@@ -1388,7 +1505,7 @@ class WISEData:
         if cluster_cpu > 1:
             submit_cmd += "-pe multicore {0} -R y ".format(cluster_cpu)
         submit_cmd += f'-N wise_lightcurves '
-        submit_cmd += f"-t 1-{self.n_chunks*self.n_cluster_jobs_per_chunk}:1 {self.submit_file}"
+        submit_cmd += f"-t {ids}:1 {self.submit_file}"
         logger.debug(f"Ram per core: {cluster_ram}")
         logger.info(f"{time.asctime(time.localtime())}: {submit_cmd}")
 
@@ -1397,11 +1514,14 @@ class WISEData:
         process = subprocess.Popen(submit_cmd, stdout=subprocess.PIPE, shell=True)
         msg = process.stdout.read().decode()
         logger.info(str(msg))
-        self.job_id = int(str(msg).split('job-array')[1].split('.')[0])
-        logger.info(f"Running on cluster with ID {self.job_id}")
+        job_id = int(str(msg).split('job-array')[1].split('.')[0])
+        logger.info(f"Running on cluster with ID {job_id}")
+        self.job_id = job_id
+        return job_id
 
     def run_cluster(self, cluster_cpu, cluster_h, cluster_ram, service):
         self.clear_cluster_log_dir()
+        self._save_cluster_info()
         self.submit_to_cluster(cluster_cpu, cluster_h, cluster_ram, tables=None, service=service)
         self.wait_for_job()
         for c in range(self.n_chunks):
@@ -1420,37 +1540,55 @@ class WISEData:
     # START MAKE PLOTTING FUNCTIONS     #
     #####################################
 
-    def plot_lc(self, parent_sample_idx=None, wise_id=None, interactive=False, fn=None, ax=None, save=True,
-                plot_unbinned=False, plot_binned=True, lum_key='flux_density', service='tap', **kwargs):
+    def plot_lc(self, parent_sample_idx=None, service='tap', plot_unbinned=False, plot_binned=True,
+                interactive=False, fn=None, ax=None, save=True, lum_key='flux_density', **kwargs):
 
         logger.debug(f"loading binned lightcurves")
         lcs = self.load_binned_lcs(service)
-        unbinned_lc = None
         _get_unbinned_lcs_fct = self._get_unbinned_lightcurves if service == 'tap' else self._get_unbinned_lightcurves_gator
 
-        if not wise_id and (parent_sample_idx is not None):
-            wise_id = self.parent_sample.df.loc[int(parent_sample_idx), self.parent_wise_source_id_key]
-            if isinstance(wise_id, float) and not np.isnan(wise_id):
-                wise_id = int(wise_id)
-            logger.debug(f"{wise_id} for {parent_sample_idx}")
+        # if not wise_id and (parent_sample_idx is not None):
+        #     wise_id = self.parent_sample.df.loc[int(parent_sample_idx), self.parent_wise_source_id_key]
+        #     if isinstance(wise_id, float) and not np.isnan(wise_id):
+        #         wise_id = int(wise_id)
+        #     logger.debug(f"{wise_id} for {parent_sample_idx}")
+        #
+        # if (wise_id is not None) and not parent_sample_idx:
+        #     m = self.parent_sample.df[self.parent_wise_source_id_key] == wise_id
+        #     parent_sample_idx = self.parent_sample.df.index[m]
+        #     logger.debug(f"{parent_sample_idx} for {wise_id}")
 
-        if (wise_id is not None) and not parent_sample_idx:
-            m = self.parent_sample.df[self.parent_wise_source_id_key] == wise_id
-            parent_sample_idx = self.parent_sample.df.index[m]
-            logger.debug(f"{parent_sample_idx} for {wise_id}")
+        wise_id = self.parent_sample.df.loc[int(parent_sample_idx), self.parent_wise_source_id_key]
+        if isinstance(wise_id, float) and not np.isnan(wise_id):
+            wise_id = int(wise_id)
+        logger.debug(f"{wise_id} for {parent_sample_idx}")
 
-        lc = pd.DataFrame.from_dict(lcs[f"{int(parent_sample_idx)}_{wise_id}"])
+        lc = pd.DataFrame.from_dict(lcs[f"{int(parent_sample_idx)}"])
 
         if plot_unbinned:
             _chunk_number = self._get_chunk_number(parent_sample_index=parent_sample_idx)
 
             if service == 'tap':
                 unbinned_lcs = self._get_unbinned_lightcurves(_chunk_number)
-                unbinned_lc = unbinned_lcs[unbinned_lcs.wise_id == int(wise_id)]
+                unbinned_lc = unbinned_lcs[unbinned_lcs[self._tap_orig_id_key] == int(parent_sample_idx)]
 
             else:
                 unbinned_lcs = self._get_unbinned_lightcurves_gator(_chunk_number)
                 unbinned_lc = unbinned_lcs[unbinned_lcs.index_01 == int(parent_sample_idx)]
+
+        else:
+            unbinned_lc = None
+
+        _lc = lc if plot_binned else None
+
+        if not fn:
+            fn = os.path.join(self.plots_dir, f"{parent_sample_idx}.pdf")
+
+        return self._plot_lc(lightcurve=_lc, unbinned_lc=unbinned_lc, interactive=interactive, fn=fn, ax=ax,
+                             save=save, lum_key=lum_key, **kwargs)
+
+    def _plot_lc(self, lightcurve=None, unbinned_lc=None, interactive=False, fn=None, ax=None, save=True,
+                 lum_key='flux_density', **kwargs):
 
         if not ax:
             fig, ax = plt.subplots(**kwargs)
@@ -1459,15 +1597,15 @@ class WISEData:
 
         for b in self.bands:
             try:
-                if plot_binned:
-                    ul_mask = np.array(lc[f"{b}_{lum_key}{self.upper_limit_key}"]).astype(bool)
-                    ax.errorbar(lc.mean_mjd[~ul_mask], lc[f"{b}{self.mean_key}_{lum_key}"][~ul_mask],
-                                yerr=lc[f"{b}_{lum_key}{self.rms_key}"][~ul_mask],
+                if not isinstance(lightcurve, type(None)):
+                    ul_mask = np.array(lightcurve[f"{b}_{lum_key}{self.upper_limit_key}"]).astype(bool)
+                    ax.errorbar(lightcurve.mean_mjd[~ul_mask], lightcurve[f"{b}{self.mean_key}_{lum_key}"][~ul_mask],
+                                yerr=lightcurve[f"{b}_{lum_key}{self.rms_key}"][~ul_mask],
                                 label=b, ls='', marker='s', c=self.band_plot_colors[b], markersize=4,
                                 markeredgecolor='k', ecolor='k', capsize=2)
-                    ax.scatter(lc.mean_mjd[ul_mask], lc[f"{b}{self.mean_key}_{lum_key}"][ul_mask],
+                    ax.scatter(lightcurve.mean_mjd[ul_mask], lightcurve[f"{b}{self.mean_key}_{lum_key}"][ul_mask],
                                marker='v', c=self.band_plot_colors[b], alpha=0.7, s=2)
-                if plot_unbinned:
+                if not isinstance(unbinned_lc, type(None)):
                     ax.errorbar(unbinned_lc.mjd, unbinned_lc[f"{b}_{lum_key}"],
                                 yerr=unbinned_lc[f"{b}_{lum_key}{self.error_key_ext}"],
                                 label=f"{b} unbinned", ls='', marker='o', c=self.band_plot_colors[b], markersize=4,
@@ -1484,8 +1622,6 @@ class WISEData:
         ax.legend()
 
         if save:
-            if not fn:
-                fn = os.path.join(self.plots_dir, f"{wise_id}.pdf")
             logger.debug(f"saving under {fn}")
             fig.savefig(fn)
 
@@ -1571,10 +1707,11 @@ class WISEData:
             kw[itr[0]] = i
             kw['remove'] = remove
             ilcs = self._load_metadata(**kw)
-            if isinstance(lcs, type(None)):
-                lcs = dict(ilcs)
-            else:
-                lcs.update(ilcs)
+            if not isinstance(ilcs, type(None)):
+                if isinstance(lcs, type(None)):
+                    lcs = dict(ilcs)
+                else:
+                    lcs.update(ilcs)
 
         self._save_metadata(lcs, service=service, chunk_number=chunk_number, overwrite=overwrite)
 
@@ -1623,7 +1760,7 @@ class WISEData:
                             imetadata[difk] = np.nan
                             imetadata[dtk] = np.nan
                     except KeyError as e:
-                        print(e)
+                        pass
 
             metadata[ID] = imetadata
         return metadata
@@ -1653,8 +1790,8 @@ if __name__ == '__main__':
     match_time = time.time()
     if cfg.phot:
         wise_data.get_photometric_data(tables=None,
-                                       perc=cfg.perc, wait=10, service='tap', mag=True, flux=False,
-                                       nthreads=100, cluster_jobs_per_chunk=500)
+                                       perc=cfg.perc, wait=cfg.wait, service='tap', mag=True, flux=False,
+                                       nthreads=100, cluster_jobs_per_chunk=200)
     phot_time = time.time()
 
     diag_txt = f"Took {phot_time-start_time}s in total\n" \
