@@ -1,20 +1,21 @@
-import os, argparse, logging
+import os, argparse
 import numpy as np
 import pandas as pd
 from astropy.coordinates import SkyCoord
 from astropy import units as u
 
-from tde_catalogue import main_logger, cache_dir, plots_dir
+from tde_catalogue import main_logger
 from tde_catalogue.data.mir_flares import base_name as mir_base_name
 from tde_catalogue.data.mir_flares.panstarrs_parent_sample import PanstarrsParentSample
 from tde_catalogue.data.mir_flares.sdss_parnet_sample import SDSSParentSample
-from tde_catalogue.data.mir_flares.parent_sample import ParentSample
+
+from timewise import ParentSampleBase
 
 
 logger = main_logger.getChild(__name__)
 
 
-class CombinedParentSample(ParentSample):
+class CombinedParentSample(ParentSampleBase):
 
     base_name = f"{mir_base_name}/combined_sample"
     default_keymap = {
@@ -57,10 +58,6 @@ class CombinedParentSample(ParentSample):
         if self._subsamples is None:
             self._subsamples = [p() for p in np.atleast_1d(self.parent_sample_classes)]
         return self._subsamples
-
-    @property
-    def local_sample_copy(self):
-        return os.path.join(self.cache_dir, "sample.csv")
 
     def _combine_samples(self):
         #######################################################################################

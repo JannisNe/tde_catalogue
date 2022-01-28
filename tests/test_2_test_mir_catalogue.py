@@ -1,17 +1,20 @@
-import unittest, shutil, argparse, time, os
+import unittest, shutil, argparse, time, os, logging
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy import units as u
 
-from tde_catalogue import main_logger, cache_dir
-from tde_catalogue.utils.mirong_sample import get_mirong_sample
+from tde_catalogue import main_logger
+from tde_catalogue.data.mir_flares import base_name as mir_base_name
 from tde_catalogue.data.mir_flares.panstarrs_parent_sample import PanstarrsParentSample
-from tde_catalogue.data.mir_flares.wise_data import WISEData
 from tde_catalogue.data.mir_flares.sdss_parnet_sample import SDSSParentSample, CasJobs
 from tde_catalogue.data.mir_flares.combined_parent_sample import CombinedParentSample
 
 
+from timewise import WiseDataByVisit
+from timewise.utils import get_mirong_sample
+
 main_logger.setLevel('DEBUG')
+logging.getLogger('timewise').setLevel('INFO')
 logger = main_logger.getChild(__name__)
 
 
@@ -20,7 +23,7 @@ mirong_test_id = 28
 
 test_ra = mirong_sample['RA'].iloc[mirong_test_id]
 test_dec = mirong_sample['DEC'].iloc[mirong_test_id]
-test_radius_arcsec = 3600
+test_radius_arcsec = 120
 
 
 ###########################################################################################################
@@ -54,7 +57,7 @@ class PanstarrsParentSampleTestVersion(PanstarrsParentSample):
                          PanstarrsParentSampleTestVersion.query)
 
     def clean_up(self):
-        logger.info(f'removing {cache_dir}')
+        logger.info(f'removing {self.cache_dir}')
         shutil.rmtree(self.cache_dir)
         # logger.info(f'dropping {self.MAST_table_name} from MAST')
         # self.mastcasjob.drop_table(self.MAST_table_name)
@@ -102,23 +105,26 @@ class CombinedSampleTestVersion(CombinedParentSample):
         shutil.rmtree(self.cache_dir)
 
 
-class WISEDataTestVersion(WISEData):
+class WISEDataTestVersion(WiseDataByVisit):
     """
     Same as WISEData but only for one confined region of the sky
     """
-    base_name = 'test/' + WISEData.base_name
+    base_name = 'test/' + mir_base_name + '/WISE_data'
 
     def __init__(self, name_ext=''):
-        super().__init__(n_chunks=10,
+        super().__init__(n_chunks=2,
                          base_name=WISEDataTestVersion.base_name + name_ext,
-                         parent_sample_class=CombinedSampleTestVersion)
+                         parent_sample_class=CombinedSampleTestVersion,
+                         min_sep_arcsec=8)
 
-    def get_photometric_data(self, tables=None, perc=1, wait=0, service='tap', mag=True, flux=True,
-                             nthreads=100, chunks=None, cluster_jobs_per_chunk=0,
-                             overwrite=True, remove_chunks=True):
+    def get_photometric_data(self, tables=None, perc=1, wait=0, service=None, nthreads=100,
+                             chunks=None, overwrite=False, remove_chunks=False):
         if tables is None:
             tables = ['AllWISE Multiepoch Photometry Table']
-        super(WISEDataTestVersion, self).get_photometric_data(tables, perc, wait, service, mag, flux)
+        super(WISEDataTestVersion, self).get_photometric_data(
+            tables=tables, perc=perc, wait=wait, service=service, nthreads=nthreads, chunks=chunks,
+            overwrite=overwrite, remove_chunks=remove_chunks
+        )
         
     def clean_up(self):
         logger.info(f"removing {self.cache_dir}")
@@ -166,27 +172,33 @@ class TestMIRFlareCatalogue(unittest.TestCase):
         logger.info(f"\n\n Testing getting photometry \n")
         for s in ['gator', 'tap']:
             logger.info(f"\nTesting {s.upper()}")
-            wise_data.get_photometric_data(service=s, mag=True, flux=True)
+            wise_data.get_photometric_data(service=s)
             logger.info(f" --- Test calculating metadata --- ")
             wise_data.calculate_metadata(service=s)
             logger.info(f" --- Test plot lightcurves --- ")
             lcs = wise_data.load_binned_lcs(s)
-            plot_id = list(lcs.keys())[10].split('_')[0]
+            plot_id = list(lcs.keys())[3].split('_')[0]
             for lumk in ['mag', 'flux']:
                 fn = os.path.join(wise_data.plots_dir, f"{plot_id}.pdf")
                 wise_data.plot_lc(parent_sample_idx=plot_id, plot_unbinned=True, lum_key=lumk, service=s, fn=fn)
 
     @classmethod
     def tearDownClass(cls):
-        logger.info('\n clean up \n')
-        wise_data = WISEDataTestVersion()
-        wise_data.clean_up()
-        pps = PanstarrsParentSampleTestVersion()
-        pps.clean_up()
-        sdss_test = SDSSParentSampleTestVersion()
-        sdss_test.clean_up()
-        combined_sample = CombinedSampleTestVersion()
-        combined_sample.clean_up()
+        inp = input('clean up? [y/n] ')
+
+        if inp in ['y', 'Y']:
+            logger.info('\n clean up \n')
+            wise_data = WISEDataTestVersion()
+            wise_data.clean_up()
+            pps = PanstarrsParentSampleTestVersion()
+            pps.clean_up()
+            sdss_test = SDSSParentSampleTestVersion()
+            sdss_test.clean_up()
+            combined_sample = CombinedSampleTestVersion()
+            combined_sample.clean_up()
+
+        else:
+            logger.info('no clean up')
 
 
 if __name__ == '__main__':

@@ -1,18 +1,17 @@
-import os, argparse, logging, requests
+import os, argparse, logging
 import pandas as pd
 from SciServer import CasJobs, Authentication
-import numpy as np
 
-from tde_catalogue import main_logger, cache_dir, plots_dir
+from tde_catalogue import main_logger
 from tde_catalogue.data.mir_flares import base_name as mir_base_name
-from tde_catalogue.utils.sdss_utils import get_sdss_credentials, plot_cutout, get_skyserver_token
-from tde_catalogue.data.mir_flares.parent_sample import ParentSample
 
+from timewise import ParentSampleBase
+from timewise.utils import get_sdss_credentials, plot_sdss_cutout as plot_cutout
 
 logger = main_logger.getChild(__name__)
 
 
-class SDSSParentSample(ParentSample):
+class SDSSParentSample(ParentSampleBase):
 
     base_name = f"{mir_base_name}/sdss_parent_sample"
     casjobs_table_name = "spectroscopic_galaxies"
@@ -38,14 +37,6 @@ class SDSSParentSample(ParentSample):
         self._store = store
         self.submit_context = submit_context
         self.download_context = download_context
-
-        # # set up directories
-        # self.cache_dir = os.path.join(cache_dir, base_name)
-        # self.plots_dir = os.path.join(plots_dir, base_name)
-        #
-        # for d in [self.cache_dir, self.plots_dir]:
-        #     if not os.path.isdir(d):
-        #         os.makedirs(d)
 
         #######################################################################################
         # START make CASJOBS query #
@@ -80,10 +71,6 @@ class SDSSParentSample(ParentSample):
         if self._store:
             logger.info('loading local copy')
             self.df = pd.read_csv(self.local_sample_copy)
-
-    @property
-    def local_sample_copy(self):
-        return os.path.join(self.cache_dir, 'sdss_query_result.csv')
 
     @property
     def _table_in_casjobs(self):

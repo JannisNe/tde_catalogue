@@ -2,9 +2,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from tde_catalogue import main_logger
-from tde_catalogue.data.mir_flares.parent_sample import ParentSample
-from tde_catalogue.data.mir_flares.wise_data import WISEData
-from tde_catalogue.utils.sdss_utils import plot_cutout as sdss_cutout
+from timewise import ParentSampleBase, WiseDataByVisit
+from timewise.utils import plot_sdss_cutout as sdss_cutout
 from tde_catalogue.utils.panstarrs_utils import plot_cutout as panstarrs_cutout
 
 
@@ -13,7 +12,7 @@ logger = main_logger.getChild(__name__)
 
 def get_point_source_parent_sample(base_name, ra, dec):
 
-    class PointSourceParentSample(ParentSample):
+    class PointSourceParentSample(ParentSampleBase):
         default_keymap = {
             'ra': 'ra',
             'dec': 'dec',
@@ -45,10 +44,6 @@ def get_point_source_parent_sample(base_name, ra, dec):
             plt.show()
             plt.close()
 
-        @property
-        def local_sample_copy(self):
-            return
-
         def save_local(self):
             logger.debug(f"not saving")
 
@@ -57,8 +52,8 @@ def get_point_source_parent_sample(base_name, ra, dec):
 
 def get_point_source_wise_data(base_name, ra, dec, min_sep_arcsec=10, **kwargs):
     ps = get_point_source_parent_sample(base_name, ra, dec)
-    wd = WISEData(n_chunks=1, base_name=base_name, parent_sample_class=ps, min_sep_arcsec=min_sep_arcsec)
+    wd = WiseDataByVisit(n_chunks=1, base_name=base_name, parent_sample_class=ps, min_sep_arcsec=min_sep_arcsec)
     wd.match_all_chunks()
     wd.get_photometric_data(**kwargs)
-    wd.plot_lc(parent_sample_idx='0', service=kwargs.get('service', 'tap'))
+    wd.plot_lc(parent_sample_idx=0, service=kwargs.get('service', 'tap'))
     return wd

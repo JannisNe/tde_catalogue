@@ -3,7 +3,6 @@ import unittest
 from tde_catalogue import main_logger
 from tde_catalogue.compilation.compiler import Compiler, CompilerError
 from tde_catalogue.catalogue import Catalogue
-import tde_catalogue.data
 
 
 main_logger.setLevel('DEBUG')
