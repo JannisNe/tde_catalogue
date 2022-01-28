@@ -9,7 +9,7 @@ matplotlib==3.4.2
 pyvo==1.1
 pillow==8.3.2
 requests==2.26.0
-scikit-image==0.18.2
+scikit-image==0.19.1
 timewise==0.1.6
 git+git://github.com/dfm/casjobs@main
 git+git://github.com/JannisNe/mastcasjobs@master
