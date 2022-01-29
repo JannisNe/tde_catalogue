@@ -184,21 +184,15 @@ class TestMIRFlareCatalogue(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        inp = input('clean up? [y/n] ')
-
-        if inp in ['y', 'Y']:
-            logger.info('\n clean up \n')
-            wise_data = WISEDataTestVersion()
-            wise_data.clean_up()
-            pps = PanstarrsParentSampleTestVersion()
-            pps.clean_up()
-            sdss_test = SDSSParentSampleTestVersion()
-            sdss_test.clean_up()
-            combined_sample = CombinedSampleTestVersion()
-            combined_sample.clean_up()
-
-        else:
-            logger.info('no clean up')
+        logger.info('\n clean up \n')
+        wise_data = WISEDataTestVersion()
+        wise_data.clean_up()
+        pps = PanstarrsParentSampleTestVersion()
+        pps.clean_up()
+        sdss_test = SDSSParentSampleTestVersion()
+        sdss_test.clean_up()
+        combined_sample = CombinedSampleTestVersion()
+        combined_sample.clean_up()
 
 
 if __name__ == '__main__':
