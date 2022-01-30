@@ -3,11 +3,11 @@ from astropy.coordinates import SkyCoord
 from astropy import units as u
 
 from tde_catalogue import main_logger
-from tde_catalogue.utils.mirong_sample import get_mirong_sample
 from tde_catalogue.data.mir_flares import base_name as mir_base_name
 from tde_catalogue.data.mir_flares.combined_parent_sample import CombinedParentSample
 
 from timewise import WiseDataByVisit
+from timewise.utils import get_mirong_sample
 
 logger = main_logger.getChild(__name__)
 this_base_name = f'test/{mir_base_name}/WISEData_mirong_sources'
