@@ -42,7 +42,7 @@ class Compiler:
 
         # concatenate catalogues
         dfs = [cat.catalogue for cat in catalogues]
-        self.concatenated_cat = pd.concat(dfs)
+        self.concatenated_cat = pd.concat(dfs, ignore_index=True)
 
         # set quantities that are used to check for duplicates
         self.ra_key = ra_key
