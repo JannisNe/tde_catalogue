@@ -50,10 +50,11 @@ def get_point_source_parent_sample(base_name, ra, dec):
     return PointSourceParentSample
 
 
-def get_point_source_wise_data(base_name, ra, dec, min_sep_arcsec=10, **kwargs):
+def get_point_source_wise_data(base_name, ra, dec, min_sep_arcsec=10, match=False, **kwargs):
     ps = get_point_source_parent_sample(base_name, ra, dec)
     wd = WiseDataByVisit(n_chunks=1, base_name=base_name, parent_sample_class=ps, min_sep_arcsec=min_sep_arcsec)
-    wd.match_all_chunks()
+    if match:
+        wd.match_all_chunks()
     wd.get_photometric_data(**kwargs)
     wd.plot_lc(parent_sample_idx=0, service=kwargs.get('service', 'tap'))
     return wd
