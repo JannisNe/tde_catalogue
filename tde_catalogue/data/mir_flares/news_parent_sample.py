@@ -3,7 +3,7 @@ import shutil
 import numpy as np
 import pandas as pd
 
-from timewise import ParentSampleBase
+from timewise import ParentSampleBase, WiseDataByVisit
 from timewise.general import data_dir, main_logger
 
 logger = main_logger.getChild(__name__)
@@ -33,16 +33,35 @@ class NEWSParentSample(ParentSampleBase):
         'id': 'AllWISE_designation'
     }
 
-    def __init__(self):
+    def __init__(self, full_data=False):
         super().__init__(base_name=NEWSParentSample.base_name)
+        self.full_data = full_data
+        self._df = None
+
+    @property
+    def df(self):
 
         if not os.path.isfile(self.local_sample_copy):
-            self.df = self.make_sample()
-            self.df.to_csv(self.local_sample_copy)
+            full_df = self.make_sample()
+            full_df.to_csv(self.local_sample_copy)
 
+        logger.debug(f"loading {self.local_sample_copy}")
+
+        if self.full_data:
+            usecols = None
         else:
-            logger.debug(f"loading {self.local_sample_copy}")
-            self.df = pd.read_csv(self.local_sample_copy, index_col=0)
+            header = pd.read_csv(self.local_sample_copy, nrows=0).columns
+            cols = list(self.default_keymap.values()) + [WiseDataByVisit.parent_wise_source_id_key,
+                                                       WiseDataByVisit.parent_sample_wise_skysep_key]
+            usecols = [0] + [np.where(header == c)[0][0] for c in cols if c in header]
+
+        _df = pd.read_csv(
+            self.local_sample_copy,
+            index_col=0,
+            usecols=usecols
+        )
+
+        return _df
 
     @staticmethod
     def make_sample():
