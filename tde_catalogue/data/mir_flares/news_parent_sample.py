@@ -3,14 +3,14 @@ import shutil
 import numpy as np
 import pandas as pd
 
-from timewise import ParentSampleBase, WiseDataByVisit
+from timewise import BigParentSampleBase, WiseDataByVisit
 from timewise.general import data_dir, main_logger
 
 logger = main_logger.getChild(__name__)
 main_logger.setLevel('DEBUG')
 
 
-class NEWSParentSample(ParentSampleBase):
+class NEWSParentSample(BigParentSampleBase):
     """
     This is an implementation of the NEWS catalogue (Khramtsov et al. A&A, Volume 644, December 2020)
     """
@@ -36,10 +36,6 @@ class NEWSParentSample(ParentSampleBase):
     def __init__(self, full_data=False):
         super().__init__(base_name=NEWSParentSample.base_name)
         self.full_data = full_data
-        self._df = None
-
-    @property
-    def df(self):
 
         if not os.path.isfile(self.local_sample_copy):
             full_df = self.make_sample()
@@ -55,13 +51,12 @@ class NEWSParentSample(ParentSampleBase):
                                                        WiseDataByVisit.parent_sample_wise_skysep_key]
             usecols = [0] + [np.where(header == c)[0][0] for c in cols if c in header]
 
-        _df = pd.read_csv(
+        self.df = pd.read_csv(
             self.local_sample_copy,
             index_col=0,
             usecols=usecols
         )
 
-        return _df
 
     @staticmethod
     def make_sample():
