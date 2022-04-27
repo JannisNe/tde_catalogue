@@ -1,9 +1,4 @@
-import os, logging
-import numpy as np
-
-from timewise import ParentSampleBase, WiseDataByVisit, WISEDataDESYCluster
-from timewise.general import data_dir, main_logger
-
+import logging
 from tde_catalogue.data.mir_flares.news_parent_sample import NEWSParentSample
 from tde_catalogue.data.mir_flares.news_wise_data import WISEDataWithKnownDesignation
 
@@ -18,19 +13,17 @@ if __name__ == '__main__':
     wd = WISEDataWithKnownDesignation(
         base_name=NEWSParentSample.base_name,
         parent_sample_class=NEWSParentSample,
-        n_chunks=90,
+        n_chunks=80,
         min_sep_arcsec=6
     )
-
-    wd.clear_unbinned_photometry_when_binning = False
 
     wd.get_sample_photometric_data(
         max_nTAPjobs=4,
         perc=1,
-        tables=None,
-        chunks=list(range(10)),
-        cluster_jobs_per_chunk=100,
-        wait=5,
+        tables=None,#"NEOWISE-R Single Exposure (L1b) Source Table",
+        chunks=None,#list(range(38, 40)),
+        cluster_jobs_per_chunk=50,
+        wait=3,
         remove_chunks=False,
         query_type='by_allwise_id',
         overwrite=True
