@@ -27,7 +27,7 @@ class SDSSParentSample(ParentSampleBase):
                  submit_context='DR16',
                  download_context='MyDB'):
 
-        super(SDSSParentSample, self).__init__(base_name=base_name)
+        super().__init__(base_name=base_name)
 
         uid, pw = get_sdss_credentials()
         logger.debug(f"logging in with {uid}")
@@ -82,13 +82,14 @@ class SDSSParentSample(ParentSampleBase):
     def query(self):
         q = f"""
         SELECT
-            ra, dec, specObjID, bestObjID, fluxObjID, targetObjID, plateID, sciencePrimary
+            s.ra, s.dec, p.u, p.g, p.r, p.i, p.z, s.z as redshift
         FROM
-            specObj
+            specObj as s
+            INNER JOIN photoObj p on p.objID = s.bestObjID
         INTO
             {self.download_context}.{self.casjobs_table_name}
         WHERE
-            class = 'GALAXY'
+            s.class = 'GALAXY' OR s.class = 'QSO'
         """
         return q
 
