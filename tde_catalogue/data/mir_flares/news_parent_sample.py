@@ -3,7 +3,7 @@ import shutil
 import numpy as np
 import pandas as pd
 
-from timewise import WiseDataByVisit, ParentSampleBase
+from timewise import ParentSampleBase, WiseDataByVisit
 from timewise.general import data_dir, main_logger
 
 
