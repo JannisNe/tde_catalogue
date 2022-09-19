@@ -3,14 +3,14 @@ import shutil
 import numpy as np
 import pandas as pd
 
-from timewise import BigParentSampleBase, WiseDataByVisit
+from timewise import WiseDataByVisit, ParentSampleBase
 from timewise.general import data_dir, main_logger
 
+
 logger = main_logger.getChild(__name__)
-main_logger.setLevel('DEBUG')
 
 
-class NEWSParentSample(BigParentSampleBase):
+class NEWSParentSample(ParentSampleBase):
     """
     This is an implementation of the NEWS catalogue (Khramtsov et al. A&A, Volume 644, December 2020)
     """
@@ -39,6 +39,7 @@ class NEWSParentSample(BigParentSampleBase):
 
         if not os.path.isfile(self.local_sample_copy):
             full_df = self.make_sample()
+            logger.debug(f"saving to {self.local_sample_copy}")
             full_df.to_csv(self.local_sample_copy)
 
         logger.debug(f"loading {self.local_sample_copy}")
@@ -98,6 +99,8 @@ class NEWSParentSample(BigParentSampleBase):
                     for j, e in enumerate(entries):
                         arrdat[i][names[j]] = e
 
+        logger.debug("creating dataframe")
         df = pd.DataFrame(arrdat)
+        logger.debug("done")
         df['sep_to_WISE_source'] = 0
         return df
