@@ -13,7 +13,7 @@ jupyterlab = "^3.4.6"
 scipy = "^1.9.1"
 pandas = "^1.4.4"
 matplotlib = "^3.5.3"
-timewise = "^0.1.10"
+timewise = "^0.2.3"
 casjobs = "^0.0.2"
 
 [tool.poetry.dev-dependencies]
